@@ -7,15 +7,20 @@ Requires FutuOpenD running locally.
 
 import json
 import argparse
-from datetime import datetime
-from html import escape
+import re
+from datetime import datetime, timedelta
+from html import escape, unescape
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 import numpy as np
 import pandas as pd
 from futu import OpenQuoteContext, RET_OK
 
 DEFAULT_HOST = '127.0.0.1'
 DEFAULT_PORT = 11111
+HKEX_REPORT_URL = 'https://www.hkex.com.hk/eng/stat/dmstat/dayrpt/dqe{date}.htm'
+HKEX_CACHE_DIR = Path('.cache') / 'hkex'
 
 
 def default_output_path(code):
@@ -29,6 +34,50 @@ def require_columns(df, columns, label):
     missing = [col for col in columns if col not in df.columns]
     if missing:
         raise RuntimeError(f"{label} missing required columns: {', '.join(missing)}")
+
+
+def parse_option_code(code):
+    """Parse observed Futu option codes into HKEX class, expiry, type, and strike."""
+    text = str(code)
+    match = re.match(r'^[A-Z]+\.(?P<class>[A-Z]+)(?P<date>\d{6})(?P<type>[CP])(?P<strike>\d+)$', text)
+    if match:
+        expiry = datetime.strptime(match.group('date'), '%y%m%d').strftime('%Y-%m-%d')
+        strike_raw = int(match.group('strike'))
+        strike = strike_raw / 1000 if strike_raw >= 1000 else float(strike_raw)
+        return {
+            'option_class': match.group('class'),
+            'expiry_date': expiry,
+            'option_side': 'CALL' if match.group('type') == 'C' else 'PUT',
+            'strike_price': float(strike),
+        }
+
+    match = re.search(r'\.?(?P<class>\d+)(?P<type>[CP])(?P<date>\d{8})(?P<strike>\d+)$', text)
+    if match:
+        expiry = datetime.strptime(match.group('date'), '%Y%m%d').strftime('%Y-%m-%d')
+        strike_raw = int(match.group('strike'))
+        strike = strike_raw / 1000 if strike_raw >= 1000 else float(strike_raw)
+        return {
+            'option_class': match.group('class'),
+            'expiry_date': expiry,
+            'option_side': 'CALL' if match.group('type') == 'C' else 'PUT',
+            'strike_price': float(strike),
+        }
+
+    return {
+        'option_class': None,
+        'expiry_date': None,
+        'option_side': None,
+        'strike_price': None,
+    }
+
+
+def add_option_code_fields(df):
+    parsed = df['code'].apply(parse_option_code).apply(pd.Series)
+    out = df.copy()
+    out['option_class'] = parsed['option_class']
+    out['parsed_expiry_date'] = parsed['expiry_date']
+    out['parsed_option_side'] = parsed['option_side']
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +214,147 @@ def filter_suspended(df, expiry_date):
 
 
 # ---------------------------------------------------------------------------
+# HKEX previous-day report enrichment
+# ---------------------------------------------------------------------------
+
+def normalise_hkex_date(value):
+    """Return YYYYMMDD for CLI input accepted as YYYYMMDD or YYMMDD."""
+    text = str(value).strip()
+    if re.fullmatch(r'\d{8}', text):
+        return text
+    if re.fullmatch(r'\d{6}', text):
+        return '20' + text
+    raise ValueError("HKEX date must be YYYYMMDD or YYMMDD")
+
+
+def hkex_url_date(report_date):
+    return datetime.strptime(report_date, '%Y%m%d').strftime('%y%m%d')
+
+
+def hkex_cache_path(report_date):
+    return HKEX_CACHE_DIR / f"dqe{hkex_url_date(report_date)}.htm"
+
+
+def fetch_hkex_daily_report(report_date):
+    cache_path = hkex_cache_path(report_date)
+    url = HKEX_REPORT_URL.format(date=hkex_url_date(report_date))
+    if cache_path.exists():
+        return cache_path.read_text(encoding='iso-8859-1', errors='replace'), url
+
+    req = Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+    with urlopen(req, timeout=10) as resp:
+        html = resp.read().decode('iso-8859-1', errors='replace')
+
+    HKEX_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(html, encoding='iso-8859-1', errors='replace')
+    return html, url
+
+
+def find_latest_hkex_report(start_date=None, lookback_days=10):
+    start = start_date or (datetime.now().date() - timedelta(days=1))
+    failures = []
+    for offset in range(lookback_days + 1):
+        report_date = (start - timedelta(days=offset)).strftime('%Y%m%d')
+        try:
+            html, url = fetch_hkex_daily_report(report_date)
+            return report_date, html, url
+        except (HTTPError, URLError, TimeoutError, OSError) as exc:
+            failures.append(f"{report_date}: {exc}")
+    raise RuntimeError(f"No HKEX daily report found in last {lookback_days + 1} calendar days")
+
+
+def parse_hkex_number(value):
+    text = str(value).replace(',', '').strip()
+    if text in {'', '-', 'NIL'}:
+        return None
+    return float(text)
+
+
+def parse_hkex_int(value):
+    number = parse_hkex_number(value)
+    return None if number is None else int(round(number))
+
+
+def hkex_expiry_to_iso(value):
+    return datetime.strptime(value, '%d%b%y').strftime('%Y-%m-%d')
+
+
+def parse_hkex_daily_report(html, option_class):
+    """Parse one HKEX option class section from a daily market report."""
+    option_class = option_class.upper()
+    section_match = re.search(
+        rf'<A NAME="{re.escape(option_class)}">\s*(?P<section>.*?)(?=<A NAME="[^"]+">|\Z)',
+        html,
+        flags=re.S | re.I,
+    )
+    if not section_match:
+        return pd.DataFrame()
+
+    section = unescape(re.sub(r'<[^>]+>', '', section_match.group('section')))
+    records = []
+    for line in section.splitlines():
+        parts = line.split()
+        if len(parts) < 12:
+            continue
+        if not re.fullmatch(r'\d{2}[A-Z]{3}\d{2}', parts[0].upper()):
+            continue
+        if parts[2] not in {'C', 'P'}:
+            continue
+
+        try:
+            records.append({
+                'option_class': option_class,
+                'expiry_date': hkex_expiry_to_iso(parts[0].upper()),
+                'strike_price': float(parts[1].replace(',', '')),
+                'option_side': 'CALL' if parts[2] == 'C' else 'PUT',
+                'prev_volume': parse_hkex_int(parts[9]),
+                'prev_oi': parse_hkex_int(parts[10]),
+                'prev_oi_change': parse_hkex_int(parts[11]),
+            })
+        except ValueError:
+            continue
+
+    return pd.DataFrame.from_records(records)
+
+
+def infer_option_class(*frames):
+    classes = []
+    for frame in frames:
+        if 'option_class' not in frame.columns:
+            continue
+        classes.extend(frame['option_class'].dropna().astype(str).unique().tolist())
+    if not classes:
+        return None
+    counts = pd.Series(classes).value_counts()
+    return str(counts.index[0])
+
+
+def merge_hkex_activity(df, hkex_rows):
+    out = df.copy()
+    defaults = {
+        'prev_volume': None,
+        'prev_oi': None,
+        'prev_oi_change': None,
+    }
+    if hkex_rows is None or hkex_rows.empty:
+        for col, value in defaults.items():
+            out[col] = value
+        return out
+
+    key_cols = ['option_class', 'parsed_expiry_date', 'strike_price', 'parsed_option_side']
+    hkex = hkex_rows.rename(columns={
+        'expiry_date': 'parsed_expiry_date',
+        'option_side': 'parsed_option_side',
+    })
+    out = out.merge(
+        hkex[key_cols + ['prev_volume', 'prev_oi', 'prev_oi_change']],
+        on=key_cols,
+        how='left',
+    )
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Calculations
 # ---------------------------------------------------------------------------
 
@@ -224,14 +414,88 @@ def key_levels(df, spot):
     }
 
 
-def flag_unusual(df, multiplier=2.0):
+def apply_activity_signals(
+    df,
+    min_live_volume=100,
+    prev_volume_multiplier=2.0,
+    volume_oi_ratio_threshold=0.50,
+    min_oi_change_for_hot=20,
+):
     df = df.copy()
-    df['unusual_vol'] = False
+    df['volume_oi_ratio'] = None
+    df['activity_score'] = 0
+    df['activity_label'] = 'Normal'
+    df['activity_hot'] = False
+    df['activity_reasons'] = [[] for _ in range(len(df))]
+
+    oi = pd.to_numeric(df['option_open_interest'], errors='coerce')
+    volume = pd.to_numeric(df['volume'], errors='coerce').fillna(0)
+    ratio_mask = oi > 0
+    df.loc[ratio_mask, 'volume_oi_ratio'] = (volume[ratio_mask] / oi[ratio_mask]).round(4)
+
     for t in ['CALL', 'PUT']:
         mask = df['option_type'] == t
-        median = df.loc[mask, 'volume'].median()
-        if pd.notna(median) and median > 0:
-            df.loc[mask, 'unusual_vol'] = df.loc[mask, 'volume'] > multiplier * median
+        if not mask.any():
+            continue
+
+        side = df.loc[mask].copy()
+        score = pd.Series(0, index=side.index, dtype=int)
+        reasons = {idx: [] for idx in side.index}
+
+        live_volume = pd.to_numeric(side['volume'], errors='coerce').fillna(0)
+        live_volume_signal = live_volume >= min_live_volume
+        score += live_volume_signal.astype(int)
+        for idx, value in live_volume[live_volume_signal].items():
+            reasons[idx].append(f"Live volume {int(value):,} >= {min_live_volume:,}")
+
+        if 'prev_volume' in side.columns:
+            prev_volume = pd.to_numeric(side['prev_volume'], errors='coerce')
+            prev_volume_known = prev_volume.notna()
+            above_nonzero_prev = (
+                prev_volume_known
+                & (prev_volume > 0)
+                & (live_volume >= prev_volume_multiplier * prev_volume)
+                & (live_volume >= min_live_volume)
+            )
+            above_zero_prev = (
+                prev_volume_known
+                & (prev_volume == 0)
+                & (live_volume >= min_live_volume)
+            )
+            score += (above_nonzero_prev | above_zero_prev).astype(int)
+            for idx in side.index[above_nonzero_prev]:
+                reasons[idx].append(
+                    f"Volume {int(live_volume.loc[idx]):,} >= {prev_volume_multiplier:g}x previous day {int(prev_volume.loc[idx]):,}"
+                )
+            for idx in side.index[above_zero_prev]:
+                reasons[idx].append(f"Previous-day volume was 0; live volume {int(live_volume.loc[idx]):,} is active")
+
+        ratio = pd.to_numeric(side['volume_oi_ratio'], errors='coerce')
+        ratio_signal = (ratio >= volume_oi_ratio_threshold).fillna(False)
+        score += ratio_signal.astype(int)
+        for idx, value in ratio[ratio_signal].items():
+            reasons[idx].append(f"Volume/OI {value:.0%} >= {volume_oi_ratio_threshold:.0%}")
+
+        if 'prev_oi_change' in side.columns:
+            prev_oi_change = pd.to_numeric(side['prev_oi_change'], errors='coerce')
+            oi_change_signal = (prev_oi_change > 0).fillna(False)
+            score += oi_change_signal.astype(int)
+            for idx, value in prev_oi_change[oi_change_signal].items():
+                reasons[idx].append(f"Previous-day OI change +{int(value):,}")
+
+        df.loc[side.index, 'activity_score'] = score
+        for idx, items in reasons.items():
+            df.at[idx, 'activity_reasons'] = items
+
+    df.loc[df['activity_score'] >= 4, 'activity_label'] = 'Strong Positioning'
+    df.loc[df['activity_score'] == 3, 'activity_label'] = 'High Activity'
+    df.loc[df['activity_score'] == 2, 'activity_label'] = 'Active'
+    prev_oi_change = pd.to_numeric(df.get('prev_oi_change'), errors='coerce')
+    df['activity_hot'] = (df['activity_score'] >= 4) & (prev_oi_change >= min_oi_change_for_hot)
+    for idx, row in df[df['activity_hot']].iterrows():
+        reasons = list(row['activity_reasons'])
+        reasons.append(f"Fire marker: score {int(row['activity_score'])} >= 4 and OI change {int(row['prev_oi_change']):,} >= {min_oi_change_for_hot:,}")
+        df.at[idx, 'activity_reasons'] = reasons
     return df
 
 
@@ -261,17 +525,21 @@ def oi_chart_data(df):
 
 
 def to_records(df):
-    cols = ['code', 'strike_price', 'volume', 'option_open_interest',
+    cols = ['code', 'option_class', 'strike_price', 'volume', 'option_open_interest',
+            'prev_volume', 'prev_oi', 'prev_oi_change',
+            'volume_oi_ratio', 'activity_score', 'activity_label', 'activity_hot', 'activity_reasons',
             'last_price', 'bid_price', 'ask_price',
             'option_implied_volatility', 'option_delta',
-            'option_gamma', 'option_vega', 'option_theta', 'unusual_vol']
+            'option_gamma', 'option_vega', 'option_theta']
     cols = [c for c in cols if c in df.columns]
     records = []
     for _, row in df[cols].iterrows():
         rec = {}
         for c in cols:
             v = row[c]
-            if pd.isna(v) if not isinstance(v, bool) else False:
+            if isinstance(v, list):
+                rec[c] = v
+            elif pd.isna(v) if not isinstance(v, bool) else False:
                 rec[c] = None
             elif isinstance(v, bool):
                 rec[c] = bool(v)
@@ -342,6 +610,7 @@ def generate_html(data: dict) -> str:
   .today-badge {{ font-size: 10px; color: var(--yellow); background: #d2992233; border: 1px solid var(--yellow); border-radius: 12px; padding: 2px 8px; text-transform: uppercase; letter-spacing: .3px; }}
   .expiry-notice {{ display: none; color: var(--yellow); background: #d299221a; border: 1px solid #d2992266; border-radius: 8px; padding: 8px 10px; margin: -4px 0 14px; font-size: 12px; }}
   .expiry-notice.show {{ display: block; }}
+  .activity-source {{ color: var(--muted); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin: -10px 0 18px; font-size: 12px; }}
 
   /* Charts */
   .charts-row {{ display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 28px; }}
@@ -373,8 +642,7 @@ def generate_html(data: dict) -> str:
   td:first-child {{ text-align: left; font-family: monospace; font-size: 11px; color: var(--muted); }}
   tr:last-child td {{ border-bottom: none; }}
   tr:hover td {{ background: #21262d; }}
-  .unusual {{ color: var(--yellow); }}
-  .unusual::after {{ content: ' 🔥'; }}
+  .activity-hot {{ color: var(--yellow); }}
 
   /* P/C ratio bar */
   .pc-bar-wrap {{ margin-top: 10px; }}
@@ -406,6 +674,7 @@ def generate_html(data: dict) -> str:
   <!-- Key stats -->
   <div class="section-title first">Key Statistics</div>
   <div class="cards" id="stat-cards"></div>
+  <div class="activity-source" id="activity-source"></div>
 
   <!-- Current expiry -->
   <div class="section-title">
@@ -493,37 +762,17 @@ const DATA = {json_data};
 // ── helpers ──────────────────────────────────────────────────────────────────
 const fmt  = (v, d=2) => v == null ? '—' : Number(v).toFixed(d);
 const fmtK = (v)      => v == null ? '—' : v >= 1000 ? (v/1000).toFixed(1)+'K' : Number(v).toFixed(0);
+const fmtSignedK = (v) => v == null ? '—' : `${{Number(v) > 0 ? '+' : Number(v) < 0 ? '-' : ''}}${{fmtK(Math.abs(Number(v)))}}`;
 const ratioClass = (v) => v == null ? 'neutral' : v > 1 ? 'down' : 'up';
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, ch => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[ch]));
 
-function shortCode(code) {{
-  // Observed Futu format: HK.KST260508C45000 -> C45.00 08May26.
-  const months = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  const fmtDate = (date) => {{
-    const yy = date.length === 6 ? date.slice(0, 2) : date.slice(2, 4);
-    const mm = date.length === 6 ? date.slice(2, 4) : date.slice(4, 6);
-    const dd = date.length === 6 ? date.slice(4, 6) : date.slice(6, 8);
-    return `${{dd}}${{months[Number(mm)] || mm}}${{yy}}`;
-  }};
-  const fmtStrike = (strike) => {{
-    const n = Number(strike);
-    if (!Number.isFinite(n)) return strike;
-    return (n >= 1000 ? n / 1000 : n).toFixed(2);
-  }};
+function shortCode(row) {{
+  if (row.option_class) return row.option_class;
 
-  let m = code.match(/^[A-Z]+\\.[A-Z]+(\\d{{6}})([CP])(\\d+)$/);
-  if (m) {{
-    const [, date, type, strike] = m;
-    return `${{type}}${{fmtStrike(strike)}} ${{fmtDate(date)}}`;
-  }}
+  let m = String(row.code || '').match(/^[A-Z]+\\.([A-Z]+)\\d{{6}}[CP]\\d+$/);
+  if (m) return m[1];
 
-  m = code.match(/\\.?(\\d+)([CP])(\\d{{8}})(\\d+)$/);
-  if (m) {{
-    const [, , type, date, strike] = m;
-    return `${{type}}${{fmtStrike(strike)}} ${{fmtDate(date)}}`;
-  }}
-
-  return code;
+  return row.code;
 }}
 
 // ── stat cards ────────────────────────────────────────────────────────────────
@@ -547,6 +796,21 @@ document.getElementById('stat-cards').innerHTML = cards.map(c => `
     <div class="value ${{c.cls}}">${{esc(c.value)}}</div>
     <div class="sub">${{esc(c.sub)}}</div>
   </div>`).join('');
+
+function renderActivitySource() {{
+  const hkex = DATA.hkex || {{}};
+  const el = document.getElementById('activity-source');
+  if (hkex.loaded && hkex.matched_contracts > 0) {{
+    const coverage = hkex.match_coverage_pct != null ? `, ${{hkex.match_coverage_pct}}% coverage` : '';
+    el.textContent = `Activity signal uses live Futu volume/OI plus HKEX previous trading-day OI change from ${{hkex.date}} (${{hkex.option_class}}), matched ${{hkex.matched_contracts}} of ${{hkex.fetched_contracts}} fetched contracts${{coverage}}. Rows without HKEX matches use live Futu fields only.`;
+  }} else if (hkex.enabled) {{
+    el.textContent = hkex.message || 'HKEX activity data is unavailable; activity markers use live Futu data only.';
+  }} else {{
+    el.textContent = 'HKEX activity enrichment disabled; activity markers use live Futu data only.';
+  }}
+}}
+
+renderActivitySource();
 
 // ── key levels block ──────────────────────────────────────────────────────────
 function renderLevels(containerId, levels) {{
@@ -752,22 +1016,28 @@ makeVolChart('chart-next-vol', DATA.next.top5_calls, DATA.next.top5_puts);
 
 // ── option tables ─────────────────────────────────────────────────────────────
 const TABLE_HEAD = `<thead><tr>
-  <th>Code</th><th>Strike</th><th>Vol</th><th>OI</th>
+  <th>Code</th><th>Strike</th><th>Vol</th><th>OI</th><th>OI Chg</th>
   <th>Last</th><th>Bid</th><th>Ask</th>
   <th>IV%</th><th>Δ</th><th>Γ</th><th>Θ</th>
 </tr></thead>`;
 
 function renderTable(tableId, rows) {{
   if (!rows.length) {{
-    document.getElementById(tableId).innerHTML = TABLE_HEAD + `<tbody><tr><td colspan="11" style="text-align:center;color:var(--muted);font-family:inherit;padding:18px">No contracts</td></tr></tbody>`;
+    document.getElementById(tableId).innerHTML = TABLE_HEAD + `<tbody><tr><td colspan="12" style="text-align:center;color:var(--muted);font-family:inherit;padding:18px">No contracts</td></tr></tbody>`;
     return;
   }}
 
+  const activityTitle = (r) => [
+    r.activity_label || 'Normal',
+    ...((r.activity_reasons || []).map(reason => `- ${{reason}}`)),
+  ].join('\\n');
+
   const tbody = rows.map(r => `<tr>
-    <td class="${{r.unusual_vol ? 'unusual' : ''}}">${{shortCode(r.code)}}</td>
+    <td class="${{r.activity_hot ? 'activity-hot' : ''}}" title="${{esc(activityTitle(r))}}">${{esc(shortCode(r))}}${{r.activity_hot ? ' &#128293;' : ''}}</td>
     <td>${{fmt(r.strike_price)}}</td>
     <td>${{fmtK(r.volume)}}</td>
     <td>${{fmtK(r.option_open_interest)}}</td>
+    <td class="${{r.prev_oi_change > 0 ? 'up' : r.prev_oi_change < 0 ? 'down' : ''}}">${{fmtSignedK(r.prev_oi_change)}}</td>
     <td>${{fmt(r.last_price)}}</td>
     <td>${{fmt(r.bid_price)}}</td>
     <td>${{fmt(r.ask_price)}}</td>
@@ -798,6 +1068,8 @@ def main():
     parser.add_argument('--host',   default=DEFAULT_HOST)
     parser.add_argument('--port',   type=int, default=DEFAULT_PORT)
     parser.add_argument('--output', default=None)
+    parser.add_argument('--hkex-date', default=None, help='HKEX daily report date, YYYYMMDD or YYMMDD; defaults to latest available')
+    parser.add_argument('--no-hkex', action='store_true', help='Disable HKEX previous-day activity enrichment')
     args = parser.parse_args()
     output_path = args.output or default_output_path(args.code)
 
@@ -829,13 +1101,68 @@ def main():
         df_cur, suspended_cur = filter_suspended(df_cur, current_exp_date)
         if suspended_cur:
             print(f"  Filtered {suspended_cur} suspended contracts for {current_exp_date}")
-        df_cur = flag_unusual(df_cur)
+        df_cur = add_option_code_fields(df_cur)
 
         df_nxt = merge_chain_snapshot(chain_nxt, snapshot, args.code, next_exp_date)
         df_nxt, suspended_nxt = filter_suspended(df_nxt, next_exp_date)
         if suspended_nxt:
             print(f"  Filtered {suspended_nxt} suspended contracts for {next_exp_date}")
-        df_nxt = flag_unusual(df_nxt)
+        df_nxt = add_option_code_fields(df_nxt)
+
+        option_class = infer_option_class(df_cur, df_nxt)
+        hkex_meta = {
+            'enabled': not args.no_hkex,
+            'loaded': False,
+            'date': None,
+            'url': None,
+            'option_class': option_class,
+            'matched_contracts': 0,
+            'fetched_contracts': int(len(df_cur) + len(df_nxt)),
+            'match_coverage_pct': None,
+            'message': 'HKEX enrichment disabled' if args.no_hkex else '',
+        }
+
+        if args.no_hkex:
+            df_cur = merge_hkex_activity(df_cur, pd.DataFrame())
+            df_nxt = merge_hkex_activity(df_nxt, pd.DataFrame())
+        elif not option_class:
+            hkex_meta['message'] = 'Could not infer HKEX option class from Futu option codes'
+            df_cur = merge_hkex_activity(df_cur, pd.DataFrame())
+            df_nxt = merge_hkex_activity(df_nxt, pd.DataFrame())
+        else:
+            try:
+                if args.hkex_date:
+                    report_date = normalise_hkex_date(args.hkex_date)
+                    hkex_html, hkex_url = fetch_hkex_daily_report(report_date)
+                else:
+                    report_date, hkex_html, hkex_url = find_latest_hkex_report()
+
+                hkex_rows = parse_hkex_daily_report(hkex_html, option_class)
+                df_cur = merge_hkex_activity(df_cur, hkex_rows)
+                df_nxt = merge_hkex_activity(df_nxt, hkex_rows)
+                matched = int(df_cur['prev_oi_change'].notna().sum() + df_nxt['prev_oi_change'].notna().sum())
+                fetched = hkex_meta['fetched_contracts']
+                coverage = round(matched / fetched * 100, 1) if fetched else None
+                hkex_meta.update({
+                    'loaded': not hkex_rows.empty,
+                    'date': report_date,
+                    'url': hkex_url,
+                    'matched_contracts': matched,
+                    'match_coverage_pct': coverage,
+                    'message': (
+                        f"HKEX report loaded; matched {matched} of {fetched} fetched contracts"
+                        if matched else f"HKEX report loaded but no fetched contracts matched out of {fetched}"
+                    ),
+                })
+                print(f"  HKEX activity: {hkex_meta['message']}")
+            except (RuntimeError, HTTPError, URLError, TimeoutError, OSError, ValueError) as exc:
+                hkex_meta['message'] = f"HKEX activity unavailable: {exc}"
+                print(f"  {hkex_meta['message']}")
+                df_cur = merge_hkex_activity(df_cur, pd.DataFrame())
+                df_nxt = merge_hkex_activity(df_nxt, pd.DataFrame())
+
+        df_cur = apply_activity_signals(df_cur)
+        df_nxt = apply_activity_signals(df_nxt)
 
         print("  Calculating key levels ...")
         lvl_cur = key_levels(df_cur, spot)
@@ -846,6 +1173,7 @@ def main():
             'spot':        round(spot, 4),
             'change_pct':  round(change_pct, 2),
             'last_updated': datetime.now().strftime('%Y-%m-%d %H:%M'),
+            'hkex':        hkex_meta,
             'current': {
                 'expiry':     current_exp_date,
                 'expiry_days': current_exp['days'],
