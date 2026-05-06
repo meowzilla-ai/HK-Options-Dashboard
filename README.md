@@ -76,33 +76,17 @@ FutuOpenD
 ## Known Limitations & Planned Improvements
 
 ### Performance
-- [x] **`max_pain` is slow** — uses `iterrows()` (O(strikes × contracts) in pure Python). Replace with vectorised NumPy operations.
-- [x] **Two separate snapshot round-trips** — underlying spot and option chain snapshots are fetched independently. Batch them into one call.
+
 
 ### Correctness
-- [x] **`shortCode` regex breaks on observed Futu codes** — observed codes look like `HK.KST260508C45000`; the current regex expects a numeric underlying prefix and an 8-digit date. Parse `YYMMDD + C/P + scaled strike` formats and display `45000` as `45.00`.
-- [x] **Unavailable P/C ratios render as `0.000`** — Python returns `None` when call volume/OI is zero, but JS coerces nullish ratios to zero in the gauge. Render these as `—` / unavailable instead of a real ratio.
 - [ ] **Unusual volume flag skips chains where median volume = 0** — common in thinly traded expiries. Use an absolute minimum threshold instead of a multiplier on zero.
-- [x] **`ticker_display` replacement is a no-op** — `'HK.'.replace('HK.', 'HK.')` does nothing. Fix the intended formatting.
-- [x] **`pct` and `sign` JS helpers defined but never used** — dead code, remove.
-- [x] **Max pain color class is missing** — HTML assigns class `yellow`, but CSS only defines `--yellow`; add `.yellow { color: var(--yellow); }` or use an existing class.
+
 
 ### Robustness
-- [x] **Suspended options distort calculations** — contracts with `suspension=True` should be filtered before max pain and OI chart calculations.
-- [x] **Same-day expiries need an expiry-day warning** — keep `option_expiry_date_distance >= 0`, but flag same-day expiries in the dashboard because data can become stale after market close.
-- [x] **Empty chain fails silently** — `fetch_chain()` returns an empty DataFrame with no warning; downstream code crashes with an unhelpful error.
-- [x] **Missing Futu response columns are not validated** — calculations assume columns like `option_type`, `strike_price`, `volume`, and `option_open_interest` exist. Validate required columns after each API response and raise clear errors.
-- [x] **Spot snapshot edge cases are not guarded** — `get_spot()` assumes at least one snapshot row and a non-zero previous close. Handle empty snapshots and `prev_close_price == 0`.
-- [x] **Partial option snapshots are silent** — if a batched snapshot returns fewer contracts than requested, the left merge creates missing prices/Greeks without a warning.
+
 
 ### HTML / Frontend
-- [x] **Call wall / put wall / max pain not marked on OI chart** — OI charts now use grouped dotted marker lines with a compact centered legend under the x-axis, avoiding line labels inside the plot.
-- [x] **Volume chart x-axis shows rank (1–5) instead of strikes** — replace with actual strike prices so the viewer can see where unusual volume sits relative to spot.
-- [x] **Chart.js loaded from CDN** — documented that the dashboard is a single HTML file but requires internet access for Chart.js chart rendering.
-- [x] **Generated file URL is not escaped** — `file://{abs_path}` breaks for spaces and special characters. Use `Path(args.output).resolve().as_uri()`.
-- [x] **Ticker is inserted into HTML without escaping** — `ticker_display` is derived from CLI input and is interpolated directly into `<title>` and the ticker badge. Escape generated HTML text.
-- [x] **Top 5 volume tables include zero-volume contracts** — traded contracts are ranked first by volume, then zero-volume fallback rows are ranked by highest OI.
+
 
 ### Minor
-- [x] **Docstring references old filename** — updated from `fetch_options.py` after rename.
 - [ ] **`generate_html` is a 370-line f-string** — extract HTML into a separate template or module-level constant for easier editing.
