@@ -1,0 +1,1413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Options Dashboard — HK.01024</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg:       #0d1117;
+    --surface:  #161b22;
+    --border:   #30363d;
+    --text:     #e6edf3;
+    --muted:    #8b949e;
+    --green:    #3fb950;
+    --red:      #f85149;
+    --yellow:   #d29922;
+    --blue:     #58a6ff;
+    --purple:   #bc8cff;
+    --card-bg:  #1c2128;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; font-size: 13px; }
+
+  /* Header */
+  .header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 14px 24px; display: flex; align-items: center; justify-content: space-between; }
+  .header h1 { font-size: 18px; font-weight: 600; letter-spacing: .3px; }
+  .header .meta { color: var(--muted); font-size: 12px; }
+  .header .ticker-badge { background: #1f6feb33; border: 1px solid #1f6feb; color: var(--blue); padding: 2px 10px; border-radius: 20px; font-size: 12px; margin-left: 12px; }
+
+  /* Main layout */
+  .container { max-width: 1400px; margin: 0 auto; padding: 20px 24px; }
+
+  /* Stat cards */
+  .cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 24px; }
+  .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
+  .card .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .5px; margin-bottom: 6px; }
+  .card .value { font-size: 20px; font-weight: 600; }
+  .card .sub   { color: var(--muted); font-size: 11px; margin-top: 4px; }
+  .up   { color: var(--green); }
+  .down { color: var(--red);   }
+  .yellow { color: var(--yellow); }
+  .neutral { color: var(--blue); }
+
+  /* Section headers */
+  .section-title { font-size: 14px; font-weight: 600; margin: 28px 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; }
+  .section-title.first { margin-top: 0; }
+  .expiry-badge { font-size: 11px; color: var(--muted); background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 2px 8px; }
+  .today-badge { font-size: 10px; color: var(--yellow); background: #d2992233; border: 1px solid var(--yellow); border-radius: 12px; padding: 2px 8px; text-transform: uppercase; letter-spacing: .3px; }
+  .expiry-notice { display: none; color: var(--yellow); background: #d299221a; border: 1px solid #d2992266; border-radius: 8px; padding: 8px 10px; margin: -4px 0 14px; font-size: 12px; }
+  .expiry-notice.show { display: block; }
+  .activity-source { color: var(--muted); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin: -10px 0 18px; font-size: 12px; }
+  .commentary-box { display: none; background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; margin-bottom: 24px; }
+  .commentary-box.show { display: block; }
+  .commentary-box h3 { font-size: 12px; color: var(--purple); margin-bottom: 6px; text-transform: uppercase; letter-spacing: .4px; }
+  .commentary-box .meta { color: var(--muted); font-size: 11px; margin-bottom: 8px; }
+  .commentary-box ul { list-style: disc; padding-left: 18px; }
+  .commentary-box li { color: var(--text); font-size: 12px; line-height: 1.55; margin: 5px 0; }
+
+  /* Charts */
+  .charts-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 28px; }
+  .chart-box { background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+  .chart-box h3 { font-size: 12px; color: var(--muted); margin-bottom: 12px; text-transform: uppercase; letter-spacing: .4px; }
+  .level-legend { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; margin: 8px 0 0; }
+  .level-legend-item { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; border: 1px solid var(--border); border-radius: 6px; padding: 3px 7px; background: var(--surface); }
+  .level-legend-line { width: 18px; border-top: 2px dashed currentColor; }
+  .chart-box canvas { max-height: 220px; }
+
+  /* Levels row */
+  .levels-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+  .levels-box { background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
+  .levels-box h3 { font-size: 12px; color: var(--muted); margin-bottom: 10px; text-transform: uppercase; letter-spacing: .4px; }
+  .levels-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+  .level-item .lbl { color: var(--muted); font-size: 10px; text-transform: uppercase; margin-bottom: 2px; }
+  .level-item .val { font-size: 14px; font-weight: 600; }
+  .summary-row { display: grid; grid-template-columns: 1fr; gap: 16px; margin-bottom: 24px; }
+  .summary-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+  .summary-item .lbl { color: var(--muted); font-size: 10px; text-transform: uppercase; margin-bottom: 2px; }
+  .summary-item .val { font-size: 13px; font-weight: 600; }
+  .summary-item .sub { color: var(--muted); font-size: 10px; margin-top: 2px; }
+
+  /* Tables */
+  .tables-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 28px; }
+  .table-box { background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .table-box h3 { padding: 10px 14px; font-size: 12px; text-transform: uppercase; letter-spacing: .4px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; }
+  .call-header { color: var(--green); }
+  .put-header  { color: var(--red);   }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th { padding: 7px 10px; text-align: right; color: var(--muted); font-weight: 500; font-size: 10px; text-transform: uppercase; border-bottom: 1px solid var(--border); background: var(--surface); }
+  th:first-child { text-align: left; }
+  td { padding: 7px 10px; text-align: right; border-bottom: 1px solid #21262d; }
+  td:first-child { text-align: left; font-family: monospace; font-size: 11px; color: var(--muted); }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: #21262d; }
+  .activity-hot { color: var(--yellow); }
+
+  /* P/C ratio bar */
+  .pc-bar-wrap { margin-top: 10px; }
+  .pc-bar-label { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+  .pc-bar { height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
+  .pc-bar-fill { height: 100%; transition: width .3s; }
+
+  @media (max-width: 900px) {
+    .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .charts-row, .levels-row, .tables-row { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 520px) {
+    .cards { grid-template-columns: 1fr; }
+    .summary-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div style="display:flex;align-items:center;gap:12px">
+    <h1>Stock Options Dashboard</h1>
+    <span class="ticker-badge">HK.01024</span>
+  </div>
+  <div class="meta">Last Updated: <strong id="last-updated"></strong></div>
+</div>
+
+<div class="container">
+
+  <!-- Key stats -->
+  <div class="section-title first">Key Statistics</div>
+  <div class="cards" id="stat-cards"></div>
+  <div class="activity-source" id="activity-source"></div>
+  <div class="commentary-box" id="futu-commentary-box">
+    <h3>Futu Derivative Abnormal Activity</h3>
+    <div class="meta" id="futu-commentary-meta"></div>
+    <ul id="futu-commentary-content"></ul>
+  </div>
+
+  <!-- Current expiry -->
+  <div class="section-title">
+    Current Expiry
+    <span class="expiry-badge" id="current-expiry-label"></span>
+    <span class="today-badge" id="current-expiry-today" style="display:none">Expires Today</span>
+  </div>
+  <div class="expiry-notice" id="current-expiry-notice"></div>
+  <div class="levels-row">
+    <div class="levels-box">
+      <h3>Key Levels</h3>
+      <div class="levels-grid" id="current-levels"></div>
+    </div>
+    <div class="levels-box">
+      <h3>Put / Call Ratios</h3>
+      <div id="current-pc"></div>
+    </div>
+  </div>
+  <div class="summary-row">
+    <div class="levels-box">
+      <h3>Previous-Day OI Change</h3>
+      <div class="summary-grid" id="current-oi-change-summary"></div>
+    </div>
+  </div>
+  <div class="charts-row">
+    <div class="chart-box">
+      <h3>OI Profile — Current Expiry</h3>
+      <canvas id="chart-current"></canvas>
+      <div class="level-legend" id="legend-current"></div>
+    </div>
+    <div class="chart-box" style="display:flex;flex-direction:column;justify-content:center;">
+      <h3>Volume Distribution</h3>
+      <canvas id="chart-current-vol"></canvas>
+    </div>
+  </div>
+  <div class="tables-row">
+    <div class="table-box">
+      <h3><span class="call-header">▲ Top 5 Calls</span></h3>
+      <table id="tbl-cur-calls"></table>
+    </div>
+    <div class="table-box">
+      <h3><span class="put-header">▼ Top 5 Puts</span></h3>
+      <table id="tbl-cur-puts"></table>
+    </div>
+  </div>
+
+  <!-- Next expiry -->
+  <div class="section-title">
+    Next Expiry
+    <span class="expiry-badge" id="next-expiry-label"></span>
+    <span class="today-badge" id="next-expiry-today" style="display:none">Expires Today</span>
+  </div>
+  <div class="expiry-notice" id="next-expiry-notice"></div>
+  <div class="levels-row">
+    <div class="levels-box">
+      <h3>Key Levels</h3>
+      <div class="levels-grid" id="next-levels"></div>
+    </div>
+    <div class="levels-box">
+      <h3>Put / Call Ratios</h3>
+      <div id="next-pc"></div>
+    </div>
+  </div>
+  <div class="summary-row">
+    <div class="levels-box">
+      <h3>Previous-Day OI Change</h3>
+      <div class="summary-grid" id="next-oi-change-summary"></div>
+    </div>
+  </div>
+  <div class="charts-row">
+    <div class="chart-box">
+      <h3>OI Profile — Next Expiry</h3>
+      <canvas id="chart-next"></canvas>
+      <div class="level-legend" id="legend-next"></div>
+    </div>
+    <div class="chart-box" style="display:flex;flex-direction:column;justify-content:center;">
+      <h3>Volume Distribution</h3>
+      <canvas id="chart-next-vol"></canvas>
+    </div>
+  </div>
+  <div class="tables-row">
+    <div class="table-box">
+      <h3><span class="call-header">▲ Top 5 Calls</span></h3>
+      <table id="tbl-nxt-calls"></table>
+    </div>
+    <div class="table-box">
+      <h3><span class="put-header">▼ Top 5 Puts</span></h3>
+      <table id="tbl-nxt-puts"></table>
+    </div>
+  </div>
+
+</div><!-- /container -->
+
+<script>
+const DATA = {
+  "ticker": "HK.01024",
+  "spot": 48.36,
+  "change_pct": 7.47,
+  "last_updated": "2026-05-07 15:50",
+  "hkex": {
+    "enabled": true,
+    "loaded": true,
+    "date": "20260506",
+    "url": "https://www.hkex.com.hk/eng/stat/dmstat/dayrpt/dqe260506.htm",
+    "option_class": "KST",
+    "matched_contracts": 82,
+    "fetched_contracts": 86,
+    "match_coverage_pct": 95.3,
+    "message": "HKEX report loaded; matched 82 of 86 fetched contracts"
+  },
+  "futu_commentary": {
+    "enabled": true,
+    "loaded": true,
+    "time_range": "近7个自然日",
+    "range_label": "Last 7 days",
+    "content": "Unusual Large Options Trades:\nNo anomaly (no qualifying unusual large options trades in the selected window).",
+    "message": "success"
+  },
+  "current": {
+    "expiry": "2026-05-08",
+    "expiry_days": 1,
+    "is_expiry_today": false,
+    "levels": {
+      "call_wall": 45.0,
+      "put_wall": 42.0,
+      "atm_strike": 48.0,
+      "max_pain": 44.0,
+      "pc_ratio_vol": 0.337,
+      "pc_ratio_oi": 0.61,
+      "call_vol": 6148.0,
+      "put_vol": 2070.0,
+      "call_oi": 5615.0,
+      "put_oi": 3423.0
+    },
+    "top5_calls": [
+      {
+        "code": "HK.KST260508C49000",
+        "option_class": "KST",
+        "option_type": "CALL",
+        "strike_price": 49.0,
+        "volume": 2049.0,
+        "option_open_interest": 493.0,
+        "prev_volume": 0.0,
+        "prev_oi": 493.0,
+        "prev_oi_change": 0.0,
+        "volume_oi_ratio": 4.1562,
+        "activity_score": 4.0,
+        "activity_label": "Strong Positioning",
+        "activity_hot": true,
+        "activity_reasons": [
+          "Live volume 2,049 >= 100",
+          "Live volume 2,049 >= side p75 threshold 561",
+          "Live volume 2,049 >= side p90 threshold 1,440",
+          "Volume/OI 416% >= 50%"
+        ],
+        "last_price": 0.69,
+        "bid_price": 0.52,
+        "ask_price": 0.56,
+        "option_implied_volatility": 80.268,
+        "option_delta": 0.3865,
+        "option_gamma": 0.1877,
+        "option_vega": 0.0097,
+        "option_theta": -0.54
+      },
+      {
+        "code": "HK.KST260508C48000",
+        "option_class": "KST",
+        "option_type": "CALL",
+        "strike_price": 48.0,
+        "volume": 1523.0,
+        "option_open_interest": 293.0,
+        "prev_volume": 11.0,
+        "prev_oi": 293.0,
+        "prev_oi_change": 2.0,
+        "volume_oi_ratio": 5.198,
+        "activity_score": 5.0,
+        "activity_label": "Strong Positioning",
+        "activity_hot": true,
+        "activity_reasons": [
+          "Live volume 1,523 >= 100",
+          "Live volume 1,523 >= side p75 threshold 561",
+          "Live volume 1,523 >= side p90 threshold 1,440",
+          "Volume/OI 520% >= 50%",
+          "Previous-day OI change +2"
+        ],
+        "last_price": 1.05,
+        "bid_price": 0.94,
+        "ask_price": 0.99,
+        "option_implied_volatility": 76.14,
+        "option_delta": 0.5829,
+        "option_gamma": 0.2017,
+        "option_vega": 0.0099,
+        "option_theta": -0.604
+      },
+      {
+        "code": "HK.KST260508C46000",
+        "option_class": "KST",
+        "option_type": "CALL",
+        "strike_price": 46.0,
+        "volume": 691.0,
+        "option_open_interest": 664.0,
+        "prev_volume": 105.0,
+        "prev_oi": 664.0,
+        "prev_oi_change": 18.0,
+        "volume_oi_ratio": 1.0407,
+        "activity_score": 4.0,
+        "activity_label": "Strong Positioning",
+        "activity_hot": true,
+        "activity_reasons": [
+          "Live volume 691 >= 100",
+          "Live volume 691 >= side p75 threshold 561",
+          "Volume/OI 104% >= 50%",
+          "Previous-day OI change +18"
+        ],
+        "last_price": 2.34,
+        "bid_price": 2.35,
+        "ask_price": 2.67,
+        "option_implied_volatility": 86.321,
+        "option_delta": 0.8703,
+        "option_gamma": 0.0963,
+        "option_vega": 0.0054,
+        "option_theta": -0.15
+      },
+      {
+        "code": "HK.KST260508C52500",
+        "option_class": "KST",
+        "option_type": "CALL",
+        "strike_price": 52.5,
+        "volume": 518.0,
+        "option_open_interest": 171.0,
+        "prev_volume": 0.0,
+        "prev_oi": 171.0,
+        "prev_oi_change": 0.0,
+        "volume_oi_ratio": 3.0292,
+        "activity_score": 2.0,
+        "activity_label": "Active",
+        "activity_hot": false,
+        "activity_reasons": [
+          "Live volume 518 >= 100",
+          "Volume/OI 303% >= 50%"
+        ],
+        "last_price": 0.09,
+        "bid_price": 0.08,
+        "ask_price": 0.11,
+        "option_implied_volatility": 108.048,
+        "option_delta": 0.0784,
+        "option_gamma": 0.0533,
+        "option_vega": 0.0037,
+        "option_theta": -0.095
+      },
+      {
+        "code": "HK.KST260508C47000",
+        "option_class": "KST",
+        "option_type": "CALL",
+        "strike_price": 47.0,
+        "volume": 473.0,
+        "option_open_interest": 925.0,
+        "prev_volume": 1002.0,
+        "prev_oi": 925.0,
+        "prev_oi_change": 196.0,
+        "volume_oi_ratio": 0.5114,
+        "activity_score": 3.0,
+        "activity_label": "High Activity",
+        "activity_hot": false,
+        "activity_reasons": [
+          "Live volume 473 >= 100",
+          "Volume/OI 51% >= 50%",
+          "Previous-day OI change +196"
+        ],
+        "last_price": 1.74,
+        "bid_price": 1.59,
+        "ask_price": 1.65,
+        "option_implied_volatility": 74.856,
+        "option_delta": 0.7727,
+        "option_gamma": 0.1586,
+        "option_vega": 0.0077,
+        "option_theta": -0.26
+      }
+    ],
+    "top5_puts": [
+      {
+        "code": "HK.KST260508P47000",
+        "option_class": "KST",
+        "option_type": "PUT",
+        "strike_price": 47.0,
+        "volume": 1010.0,
+        "option_open_interest": 61.0,
+        "prev_volume": 30.0,
+        "prev_oi": 61.0,
+        "prev_oi_change": 30.0,
+        "volume_oi_ratio": 16.5574,
+        "activity_score": 5.0,
+        "activity_label": "Strong Positioning",
+        "activity_hot": true,
+        "activity_reasons": [
+          "Live volume 1,010 >= 100",
+          "Live volume 1,010 >= side p75 threshold 116",
+          "Live volume 1,010 >= side p90 threshold 610",
+          "Volume/OI 1656% >= 50%",
+          "Previous-day OI change +30"
+        ],
+        "last_price": 0.22,
+        "bid_price": 0.23,
+        "ask_price": 0.26,
+        "option_implied_volatility": 73.481,
+        "option_delta": -0.2234,
+        "option_gamma": 0.16,
+        "option_vega": 0.0076,
+        "option_theta": -0.245
+      },
+      {
+        "code": "HK.KST260508P48000",
+        "option_class": "KST",
+        "option_type": "PUT",
+        "strike_price": 48.0,
+        "volume": 566.0,
+        "option_open_interest": 0.0,
+        "prev_volume": 0.0,
+        "prev_oi": 0.0,
+        "prev_oi_change": 0.0,
+        "volume_oi_ratio": null,
+        "activity_score": 2.0,
+        "activity_label": "Active",
+        "activity_hot": false,
+        "activity_reasons": [
+          "Live volume 566 >= 100",
+          "Live volume 566 >= side p75 threshold 116"
+        ],
+        "last_price": 0.59,
+        "bid_price": 0.57,
+        "ask_price": 0.6,
+        "option_implied_volatility": 74.605,
+        "option_delta": -0.4158,
+        "option_gamma": 0.2058,
+        "option_vega": 0.0099,
+        "option_theta": -0.5842
+      },
+      {
+        "code": "HK.KST260508P43000",
+        "option_class": "KST",
+        "option_type": "PUT",
+        "strike_price": 43.0,
+        "volume": 117.0,
+        "option_open_interest": 344.0,
+        "prev_volume": 66.0,
+        "prev_oi": 344.0,
+        "prev_oi_change": -30.0,
+        "volume_oi_ratio": 0.3401,
+        "activity_score": 2.0,
+        "activity_label": "Active",
+        "activity_hot": false,
+        "activity_reasons": [
+          "Live volume 117 >= 100",
+          "Live volume 117 >= side p75 threshold 116"
+        ],
+        "last_price": 0.05,
+        "bid_price": 0.01,
+        "ask_price": 0.04,
+        "option_implied_volatility": 113.532,
+        "option_delta": -0.0227,
+        "option_gamma": 0.0187,
+        "option_vega": 0.0014,
+        "option_theta": -0.025
+      },
+      {
+        "code": "HK.KST260508P44000",
+        "option_class": "KST",
+        "option_type": "PUT",
+        "strike_price": 44.0,
+        "volume": 111.0,
+        "option_open_interest": 469.0,
+        "prev_volume": 135.0,
+        "prev_oi": 469.0,
+        "prev_oi_change": 10.0,
+        "volume_oi_ratio": 0.2367,
+        "activity_score": 2.0,
+        "activity_label": "Active",
+        "activity_hot": false,
+        "activity_reasons": [
+          "Live volume 111 >= 100",
+          "Previous-day OI change +10"
+        ],
+        "last_price": 0.03,
+        "bid_price": 0.02,
+        "ask_price": 0.05,
+        "option_implied_volatility": 100.186,
+        "option_delta": -0.0342,
+        "option_gamma": 0.0298,
+        "option_vega": 0.0019,
+        "option_theta": -0.035
+      },
+      {
+        "code": "HK.KST260508P50000",
+        "option_class": "KST",
+        "option_type": "PUT",
+        "strike_price": 50.0,
+        "volume": 74.0,
+        "option_open_interest": 0.0,
+        "prev_volume": 0.0,
+        "prev_oi": 0.0,
+        "prev_oi_change": 0.0,
+        "volume_oi_ratio": null,
+        "activity_score": 0.0,
+        "activity_label": "Normal",
+        "activity_hot": false,
+        "activity_reasons": [],
+        "last_price": 2.09,
+        "bid_price": 1.9,
+        "ask_price": 1.96,
+        "option_implied_volatility": 85.523,
+        "option_delta": -0.7636,
+        "option_gamma": 0.142,
+        "option_vega": 0.0078,
+        "option_theta": -0.29
+      }
+    ],
+    "oi_change_summary": {
+      "call_oi_change": 95,
+      "put_oi_change": 409,
+      "bias": "Puts building faster",
+      "largest_call_increase": {
+        "option_class": "KST",
+        "option_type": "CALL",
+        "strike_price": 47.0,
+        "prev_oi_change": 196,
+        "volume": 473,
+        "option_open_interest": 925
+      },
+      "largest_put_increase": {
+        "option_class": "KST",
+        "option_type": "PUT",
+        "strike_price": 45.0,
+        "prev_oi_change": 290,
+        "volume": 71,
+        "option_open_interest": 462
+      }
+    },
+    "oi_chart": {
+      "strikes": [
+        35.0,
+        36.0,
+        37.0,
+        38.0,
+        39.0,
+        40.0,
+        41.0,
+        42.0,
+        43.0,
+        44.0,
+        45.0,
+        46.0,
+        47.0,
+        48.0,
+        49.0,
+        50.0,
+        52.5
+      ],
+      "call_oi": [
+        2.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        70.0,
+        283.0,
+        462.0,
+        710.0,
+        1422.0,
+        664.0,
+        925.0,
+        293.0,
+        493.0,
+        120.0,
+        171.0
+      ],
+      "put_oi": [
+        0.0,
+        15.0,
+        0.0,
+        371.0,
+        148.0,
+        416.0,
+        246.0,
+        543.0,
+        344.0,
+        469.0,
+        462.0,
+        340.0,
+        61.0,
+        0.0,
+        8.0,
+        0.0,
+        0.0
+      ]
+    },
+    "vol_chart": {
+      "strikes": [
+        43.0,
+        44.0,
+        46.0,
+        47.0,
+        48.0,
+        49.0,
+        50.0,
+        52.5
+      ],
+      "call_vol": [
+        0.0,
+        54.0,
+        691.0,
+        473.0,
+        1523.0,
+        2049.0,
+        415.0,
+        518.0
+      ],
+      "put_vol": [
+        117.0,
+        111.0,
+        55.0,
+        1010.0,
+        566.0,
+        34.0,
+        74.0,
+        0.0
+      ]
+    }
+  },
+  "next": {
+    "expiry": "2026-05-15",
+    "expiry_days": 8,
+    "is_expiry_today": false,
+    "levels": {
+      "call_wall": 49.0,
+      "put_wall": 45.0,
+      "atm_strike": 48.0,
+      "max_pain": 45.0,
+      "pc_ratio_vol": 0.357,
+      "pc_ratio_oi": 0.875,
+      "call_vol": 3069.0,
+      "put_vol": 1097.0,
+      "call_oi": 1830.0,
+      "put_oi": 1602.0
+    },
+    "top5_calls": [
+      {
+        "code": "HK.KST260515C50000",
+        "option_class": "KST",
+        "option_type": "CALL",
+        "strike_price": 50.0,
+        "volume": 708.0,
+        "option_open_interest": 228.0,
+        "prev_volume": 46.0,
+        "prev_oi": 228.0,
+        "prev_oi_change": -33.0,
+        "volume_oi_ratio": 3.1053,
+        "activity_score": 4.0,
+        "activity_label": "Strong Positioning",
+        "activity_hot": true,
+        "activity_reasons": [
+          "Live volume 708 >= 100",
+          "Live volume 708 >= side p75 threshold 458",
+          "Live volume 708 >= side p90 threshold 595",
+          "Volume/OI 311% >= 50%"
+        ],
+        "last_price": 1.02,
+        "bid_price": 1.0,
+        "ask_price": 1.05,
+        "option_implied_volatility": 58.785,
+        "option_delta": 0.3706,
+        "option_gamma": 0.0897,
+        "option_vega": 0.0271,
+        "option_theta": -0.1038
+      },
+      {
+        "code": "HK.KST260515C52500",
+        "option_class": "KST",
+        "option_type": "CALL",
+        "strike_price": 52.5,
+        "volume": 600.0,
+        "option_open_interest": 65.0,
+        "prev_volume": 4.0,
+        "prev_oi": 65.0,
+        "prev_oi_change": 4.0,
+        "volume_oi_ratio": 9.2308,
+        "activity_score": 5.0,
+        "activity_label": "Strong Positioning",
+        "activity_hot": true,
+        "activity_reasons": [
+          "Live volume 600 >= 100",
+          "Live volume 600 >= side p75 threshold 458",
+          "Live volume 600 >= side p90 threshold 595",
+          "Volume/OI 923% >= 50%",
+          "Previous-day OI change +4"
+        ],
+        "last_price": 0.55,
+        "bid_price": 0.49,
+        "ask_price": 0.53,
+        "option_implied_volatility": 63.648,
+        "option_delta": 0.2074,
+        "option_gamma": 0.0627,
+        "option_vega": 0.0205,
+        "option_theta": -0.0829
+      },
+      {
+        "code": "HK.KST260515C55000",
+        "option_class": "KST",
+        "option_type": "CALL",
+        "strike_price": 55.0,
+        "volume": 553.0,
+        "option_open_interest": 0.0,
+        "prev_volume": 0.0,
+        "prev_oi": 0.0,
+        "prev_oi_change": 0.0,
+        "volume_oi_ratio": null,
+        "activity_score": 2.0,
+        "activity_label": "Active",
+        "activity_hot": false,
+        "activity_reasons": [
+          "Live volume 553 >= 100",
+          "Live volume 553 >= side p75 threshold 458"
+        ],
+        "last_price": 0.27,
+        "bid_price": 0.24,
+        "ask_price": 0.28,
+        "option_implied_volatility": 68.585,
+        "option_delta": 0.1136,
+        "option_gamma": 0.0392,
+        "option_vega": 0.0138,
+        "option_theta": -0.0582
+      },
+      {
+        "code": "HK.KST260515C57500",
+        "option_class": "KST",
+        "option_type": "CALL",
+        "strike_price": 57.5,
+        "volume": 427.0,
+        "option_open_interest": 0.0,
+        "prev_volume": 0.0,
+        "prev_oi": 0.0,
+        "prev_oi_change": 0.0,
+        "volume_oi_ratio": null,
+        "activity_score": 1.0,
+        "activity_label": "Normal",
+        "activity_hot": false,
+        "activity_reasons": [
+          "Live volume 427 >= 100"
+        ],
+        "last_price": 0.16,
+        "bid_price": 0.15,
+        "ask_price": 0.18,
+        "option_implied_volatility": 76.317,
+        "option_delta": 0.0711,
+        "option_gamma": 0.0249,
+        "option_vega": 0.0097,
+        "option_theta": -0.0446
+      },
+      {
+        "code": "HK.KST260515C49000",
+        "option_class": "KST",
+        "option_type": "CALL",
+        "strike_price": 49.0,
+        "volume": 352.0,
+        "option_open_interest": 400.0,
+        "prev_volume": 40.0,
+        "prev_oi": 400.0,
+        "prev_oi_change": -21.0,
+        "volume_oi_ratio": 0.88,
+        "activity_score": 2.0,
+        "activity_label": "Active",
+        "activity_hot": false,
+        "activity_reasons": [
+          "Live volume 352 >= 100",
+          "Volume/OI 88% >= 50%"
+        ],
+        "last_price": 1.46,
+        "bid_price": 1.33,
+        "ask_price": 1.38,
+        "option_implied_volatility": 56.981,
+        "option_delta": 0.4585,
+        "option_gamma": 0.0972,
+        "option_vega": 0.0284,
+        "option_theta": -0.1065
+      }
+    ],
+    "top5_puts": [
+      {
+        "code": "HK.KST260515P46000",
+        "option_class": "KST",
+        "option_type": "PUT",
+        "strike_price": 46.0,
+        "volume": 203.0,
+        "option_open_interest": 150.0,
+        "prev_volume": 141.0,
+        "prev_oi": 150.0,
+        "prev_oi_change": 59.0,
+        "volume_oi_ratio": 1.3533,
+        "activity_score": 5.0,
+        "activity_label": "Strong Positioning",
+        "activity_hot": true,
+        "activity_reasons": [
+          "Live volume 203 >= 100",
+          "Live volume 203 >= side p75 threshold 169",
+          "Live volume 203 >= side p90 threshold 200",
+          "Volume/OI 135% >= 50%",
+          "Previous-day OI change +59"
+        ],
+        "last_price": 0.56,
+        "bid_price": 0.6,
+        "ask_price": 0.63,
+        "option_implied_volatility": 54.646,
+        "option_delta": -0.2521,
+        "option_gamma": 0.0816,
+        "option_vega": 0.0229,
+        "option_theta": -0.0784
+      },
+      {
+        "code": "HK.KST260515P41000",
+        "option_class": "KST",
+        "option_type": "PUT",
+        "strike_price": 41.0,
+        "volume": 200.0,
+        "option_open_interest": 98.0,
+        "prev_volume": 36.0,
+        "prev_oi": 98.0,
+        "prev_oi_change": 36.0,
+        "volume_oi_ratio": 2.0408,
+        "activity_score": 5.0,
+        "activity_label": "Strong Positioning",
+        "activity_hot": true,
+        "activity_reasons": [
+          "Live volume 200 >= 100",
+          "Live volume 200 >= side p75 threshold 169",
+          "Live volume 200 >= side p90 threshold 200",
+          "Volume/OI 204% >= 50%",
+          "Previous-day OI change +36"
+        ],
+        "last_price": 0.05,
+        "bid_price": 0.02,
+        "ask_price": 0.05,
+        "option_implied_volatility": 56.982,
+        "option_delta": -0.0224,
+        "option_gamma": 0.013,
+        "option_vega": 0.0038,
+        "option_theta": -0.0122
+      },
+      {
+        "code": "HK.KST260515P48000",
+        "option_class": "KST",
+        "option_type": "PUT",
+        "strike_price": 48.0,
+        "volume": 177.0,
+        "option_open_interest": 0.0,
+        "prev_volume": 0.0,
+        "prev_oi": 0.0,
+        "prev_oi_change": 0.0,
+        "volume_oi_ratio": null,
+        "activity_score": 2.0,
+        "activity_label": "Active",
+        "activity_hot": false,
+        "activity_reasons": [
+          "Live volume 177 >= 100",
+          "Live volume 177 >= side p75 threshold 169"
+        ],
+        "last_price": 1.37,
+        "bid_price": 1.37,
+        "ask_price": 1.4,
+        "option_implied_volatility": 55.367,
+        "option_delta": -0.4439,
+        "option_gamma": 0.0997,
+        "option_vega": 0.0283,
+        "option_theta": -0.0989
+      },
+      {
+        "code": "HK.KST260515P47000",
+        "option_class": "KST",
+        "option_type": "PUT",
+        "strike_price": 47.0,
+        "volume": 166.0,
+        "option_open_interest": 30.0,
+        "prev_volume": 30.0,
+        "prev_oi": 30.0,
+        "prev_oi_change": 30.0,
+        "volume_oi_ratio": 5.5333,
+        "activity_score": 3.0,
+        "activity_label": "High Activity",
+        "activity_hot": false,
+        "activity_reasons": [
+          "Live volume 166 >= 100",
+          "Volume/OI 553% >= 50%",
+          "Previous-day OI change +30"
+        ],
+        "last_price": 0.91,
+        "bid_price": 0.92,
+        "ask_price": 0.96,
+        "option_implied_volatility": 54.634,
+        "option_delta": -0.3438,
+        "option_gamma": 0.0941,
+        "option_vega": 0.0264,
+        "option_theta": -0.0909
+      },
+      {
+        "code": "HK.KST260515P40000",
+        "option_class": "KST",
+        "option_type": "PUT",
+        "strike_price": 40.0,
+        "volume": 136.0,
+        "option_open_interest": 145.0,
+        "prev_volume": 192.0,
+        "prev_oi": 145.0,
+        "prev_oi_change": 140.0,
+        "volume_oi_ratio": 0.9379,
+        "activity_score": 3.0,
+        "activity_label": "High Activity",
+        "activity_hot": false,
+        "activity_reasons": [
+          "Live volume 136 >= 100",
+          "Volume/OI 94% >= 50%",
+          "Previous-day OI change +140"
+        ],
+        "last_price": 0.02,
+        "bid_price": 0.01,
+        "ask_price": 0.05,
+        "option_implied_volatility": 62.657,
+        "option_delta": -0.0179,
+        "option_gamma": 0.0098,
+        "option_vega": 0.0032,
+        "option_theta": -0.011
+      }
+    ],
+    "oi_change_summary": {
+      "call_oi_change": 32,
+      "put_oi_change": 1100,
+      "bias": "Puts building faster",
+      "largest_call_increase": {
+        "option_class": "KST",
+        "option_type": "CALL",
+        "strike_price": 43.0,
+        "prev_oi_change": 75,
+        "volume": 36,
+        "option_open_interest": 189
+      },
+      "largest_put_increase": {
+        "option_class": "KST",
+        "option_type": "PUT",
+        "strike_price": 45.0,
+        "prev_oi_change": 344,
+        "volume": 53,
+        "option_open_interest": 464
+      }
+    },
+    "oi_chart": {
+      "strikes": [
+        37.0,
+        38.0,
+        39.0,
+        40.0,
+        41.0,
+        42.0,
+        43.0,
+        44.0,
+        45.0,
+        46.0,
+        47.0,
+        48.0,
+        49.0,
+        50.0,
+        52.5
+      ],
+      "call_oi": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        120.0,
+        189.0,
+        115.0,
+        157.0,
+        209.0,
+        130.0,
+        217.0,
+        400.0,
+        228.0,
+        65.0
+      ],
+      "put_oi": [
+        150.0,
+        0.0,
+        112.0,
+        145.0,
+        98.0,
+        97.0,
+        123.0,
+        233.0,
+        464.0,
+        150.0,
+        30.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "vol_chart": {
+      "strikes": [
+        40.0,
+        41.0,
+        46.0,
+        47.0,
+        48.0,
+        49.0,
+        50.0,
+        52.5,
+        55.0,
+        57.5
+      ],
+      "call_vol": [
+        0.0,
+        0.0,
+        119.0,
+        45.0,
+        123.0,
+        352.0,
+        708.0,
+        600.0,
+        553.0,
+        427.0
+      ],
+      "put_vol": [
+        136.0,
+        200.0,
+        203.0,
+        166.0,
+        177.0,
+        70.0,
+        9.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    }
+  }
+};
+
+// ── helpers ──────────────────────────────────────────────────────────────────
+const fmt  = (v, d=2) => v == null ? '—' : Number(v).toFixed(d);
+const fmtK = (v)      => v == null ? '—' : v >= 1000 ? (v/1000).toFixed(1)+'K' : Number(v).toFixed(0);
+const fmtSignedK = (v) => v == null ? '—' : `${Number(v) > 0 ? '+' : Number(v) < 0 ? '-' : ''}${fmtK(Math.abs(Number(v)))}`;
+const ratioClass = (v) => v == null ? 'neutral' : v > 1 ? 'down' : 'up';
+const esc = (v) => String(v ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+
+function shortCode(row) {
+  if (row.option_class) return row.option_class;
+
+  let m = String(row.code || '').match(/^[A-Z]+\.([A-Z]+)\d{6}[CP]\d+$/);
+  if (m) return m[1];
+
+  return row.code;
+}
+
+// ── stat cards ────────────────────────────────────────────────────────────────
+document.getElementById('last-updated').textContent = DATA.last_updated;
+
+const changeClass = DATA.change_pct >= 0 ? 'up' : 'down';
+const cards = [
+  { label:'Underlying Price', value: fmt(DATA.spot), sub: DATA.ticker, cls: 'neutral' },
+  { label:'Daily Change',     value: (DATA.change_pct >= 0 ? '+' : '') + fmt(DATA.change_pct) + '%', sub: 'vs prev close', cls: changeClass },
+  { label:'P/C Ratio (Vol)',  value: fmt(DATA.current.levels.pc_ratio_vol, 3), sub: 'put vol ÷ call vol', cls: ratioClass(DATA.current.levels.pc_ratio_vol) },
+  { label:'P/C Ratio (OI)',   value: fmt(DATA.current.levels.pc_ratio_oi, 3),  sub: 'put OI ÷ call OI',  cls: ratioClass(DATA.current.levels.pc_ratio_oi) },
+  { label:'Call Wall',        value: fmt(DATA.current.levels.call_wall), sub: 'current expiry', cls: 'up' },
+  { label:'Put Wall',         value: fmt(DATA.current.levels.put_wall),  sub: 'current expiry', cls: 'down' },
+  { label:'Max Pain',         value: fmt(DATA.current.levels.max_pain),  sub: 'current expiry', cls: 'yellow' },
+  { label:'ATM Strike',       value: fmt(DATA.current.levels.atm_strike), sub: 'current expiry', cls: 'neutral' },
+];
+
+document.getElementById('stat-cards').innerHTML = cards.map(c => `
+  <div class="card">
+    <div class="label">${esc(c.label)}</div>
+    <div class="value ${c.cls}">${esc(c.value)}</div>
+    <div class="sub">${esc(c.sub)}</div>
+  </div>`).join('');
+
+function renderActivitySource() {
+  const hkex = DATA.hkex || {};
+  const el = document.getElementById('activity-source');
+  if (hkex.loaded && hkex.matched_contracts > 0) {
+    const coverage = hkex.match_coverage_pct != null ? `, ${hkex.match_coverage_pct}% coverage` : '';
+    el.textContent = `Activity signal uses live Futu volume/OI plus HKEX previous trading-day OI change from ${hkex.date} (${hkex.option_class}), matched ${hkex.matched_contracts} of ${hkex.fetched_contracts} fetched contracts${coverage}. Rows without HKEX matches use live Futu fields only.`;
+  } else if (hkex.enabled) {
+    el.textContent = hkex.message || 'HKEX activity data is unavailable; activity markers use live Futu data only.';
+  } else {
+    el.textContent = 'HKEX activity enrichment disabled; activity markers use live Futu data only.';
+  }
+}
+
+renderActivitySource();
+
+function renderFutuCommentary() {
+  const commentary = DATA.futu_commentary || {};
+  if (!commentary.loaded || !commentary.content) return;
+
+  document.getElementById('futu-commentary-meta').textContent = commentary.range_label || '';
+  const lines = String(commentary.content)
+    .split(/\n+/)
+    .map(line => line.trim())
+    .filter(Boolean);
+  document.getElementById('futu-commentary-content').innerHTML = lines.map(line => `<li>${esc(line)}</li>`).join('');
+  document.getElementById('futu-commentary-box').classList.add('show');
+}
+
+renderFutuCommentary();
+
+// ── key levels block ──────────────────────────────────────────────────────────
+function renderLevels(containerId, levels) {
+  const items = [
+    { lbl:'Call Wall', val: fmt(levels.call_wall), cls:'up'      },
+    { lbl:'Put Wall',  val: fmt(levels.put_wall),  cls:'down'    },
+    { lbl:'ATM',       val: fmt(levels.atm_strike),cls:'neutral' },
+    { lbl:'Max Pain',  val: fmt(levels.max_pain),  cls:'yellow'  },
+    { lbl:'Call OI',   val: fmtK(levels.call_oi),  cls:''        },
+    { lbl:'Put OI',    val: fmtK(levels.put_oi),   cls:''        },
+  ];
+  document.getElementById(containerId).innerHTML = items.map(i => `
+    <div class="level-item">
+      <div class="lbl">${i.lbl}</div>
+      <div class="val ${i.cls}">${i.val}</div>
+    </div>`).join('');
+}
+
+function renderPC(containerId, levels) {
+  const volRatio = levels.pc_ratio_vol;
+  const oiRatio  = levels.pc_ratio_oi;
+  const volPct   = volRatio == null ? 0 : Math.min(volRatio / (volRatio + 1) * 100, 100);
+  const oiPct    = oiRatio  == null ? 0 : Math.min(oiRatio  / (oiRatio  + 1) * 100, 100);
+  const volColor = volRatio == null ? 'var(--muted)' : volRatio > 1 ? 'var(--red)' : 'var(--green)';
+  const oiColor  = oiRatio  == null ? 'var(--muted)' : oiRatio  > 1 ? 'var(--red)' : 'var(--green)';
+  const el = document.getElementById(containerId);
+  el.innerHTML = `
+    <div style="margin-bottom:14px">
+      <div class="pc-bar-label"><span>By Volume</span><span class="${ratioClass(volRatio)}">${fmt(volRatio,3)}</span></div>
+      <div class="pc-bar"><div class="pc-bar-fill" style="width:${volPct}%;background:${volColor}"></div></div>
+      <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-top:3px">
+        <span>Call ${fmtK(levels.call_vol)}</span><span>Put ${fmtK(levels.put_vol)}</span>
+      </div>
+    </div>
+    <div>
+      <div class="pc-bar-label"><span>By OI</span><span class="${ratioClass(oiRatio)}">${fmt(oiRatio,3)}</span></div>
+      <div class="pc-bar"><div class="pc-bar-fill" style="width:${oiPct}%;background:${oiColor}"></div></div>
+      <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-top:3px">
+        <span>Call OI ${fmtK(levels.call_oi)}</span><span>Put OI ${fmtK(levels.put_oi)}</span>
+      </div>
+    </div>`;
+}
+
+function contractLabel(c) {
+  if (!c) return '—';
+  const type = c.option_type === 'CALL' ? 'C' : c.option_type === 'PUT' ? 'P' : '';
+  return `${type}${fmt(c.strike_price)}`;
+}
+
+function contractSub(c) {
+  if (!c) return '';
+  return `Vol ${fmtK(c.volume)} | OI ${fmtK(c.option_open_interest)}`;
+}
+
+function renderOIChangeSummary(containerId, summary) {
+  summary = summary || {};
+  const items = [
+    { lbl:'Call OI Chg', val: fmtSignedK(summary.call_oi_change), cls: summary.call_oi_change > 0 ? 'up' : summary.call_oi_change < 0 ? 'down' : '', sub:'previous day' },
+    { lbl:'Put OI Chg', val: fmtSignedK(summary.put_oi_change), cls: summary.put_oi_change > 0 ? 'up' : summary.put_oi_change < 0 ? 'down' : '', sub:'previous day' },
+    { lbl:'Bias', val: summary.bias || 'Unavailable', cls:'neutral', sub:'by OI change' },
+    { lbl:'Largest Call Add', val: contractLabel(summary.largest_call_increase), cls:'up', sub: summary.largest_call_increase ? `${fmtSignedK(summary.largest_call_increase.prev_oi_change)} | ${contractSub(summary.largest_call_increase)}` : '' },
+    { lbl:'Largest Put Add', val: contractLabel(summary.largest_put_increase), cls:'down', sub: summary.largest_put_increase ? `${fmtSignedK(summary.largest_put_increase.prev_oi_change)} | ${contractSub(summary.largest_put_increase)}` : '' },
+  ];
+  document.getElementById(containerId).innerHTML = items.map(i => `
+    <div class="summary-item">
+      <div class="lbl">${esc(i.lbl)}</div>
+      <div class="val ${i.cls}">${esc(i.val)}</div>
+      <div class="sub">${esc(i.sub)}</div>
+    </div>`).join('');
+}
+
+function renderExpiryMeta(prefix, section) {
+  document.getElementById(`${prefix}-expiry-label`).textContent = section.expiry;
+
+  const badge = document.getElementById(`${prefix}-expiry-today`);
+  const notice = document.getElementById(`${prefix}-expiry-notice`);
+  if (section.is_expiry_today) {
+    badge.style.display = 'inline-block';
+    notice.textContent = 'This expiry is today; option prices, open interest, and volume may become stale after market close.';
+    notice.classList.add('show');
+  }
+}
+
+renderLevels('current-levels', DATA.current.levels);
+renderPC('current-pc', DATA.current.levels);
+renderOIChangeSummary('current-oi-change-summary', DATA.current.oi_change_summary);
+renderLevels('next-levels', DATA.next.levels);
+renderPC('next-pc', DATA.next.levels);
+renderOIChangeSummary('next-oi-change-summary', DATA.next.oi_change_summary);
+
+renderExpiryMeta('current', DATA.current);
+renderExpiryMeta('next', DATA.next);
+
+// ── OI profile charts ─────────────────────────────────────────────────────────
+function levelMarkers(chartData, levels) {
+  const markerIndex = strike => chartData.strikes.findIndex(s => Number(s) === Number(strike));
+  const rawMarkers = [
+    { label: 'Call Wall', strike: levels.call_wall, idx: markerIndex(levels.call_wall), color: '#3fb950' },
+    { label: 'Put Wall',  strike: levels.put_wall,  idx: markerIndex(levels.put_wall),  color: '#f85149' },
+    { label: 'Max Pain',  strike: levels.max_pain,  idx: markerIndex(levels.max_pain),  color: '#d29922' },
+  ].filter(marker => marker.strike != null && marker.idx >= 0);
+
+  const grouped = new Map();
+  rawMarkers.forEach(marker => {
+    const key = String(marker.idx);
+    if (!grouped.has(key)) {
+      grouped.set(key, { ...marker, labels: [marker.label] });
+      return;
+    }
+
+    const existing = grouped.get(key);
+    existing.labels.push(marker.label);
+    existing.label = existing.labels.join(' + ');
+    existing.color = '#bc8cff';
+  });
+  return Array.from(grouped.values());
+}
+
+function renderLevelLegend(containerId, markers) {
+  document.getElementById(containerId).innerHTML = markers.map(marker => `
+    <span class="level-legend-item" style="color:${marker.color}">
+      <span class="level-legend-line"></span>
+      <span>${marker.label} ${fmt(marker.strike)}</span>
+    </span>
+  `).join('');
+}
+
+const levelLinePlugin = {
+  id: 'levelLines',
+  afterDatasetsDraw(chart, args, pluginOptions) {
+    const markers = pluginOptions?.markers || [];
+    if (!markers.length) return;
+
+    const { ctx, chartArea, scales } = chart;
+    const xScale = scales.x;
+
+    ctx.save();
+    markers.forEach(marker => {
+      const x = xScale.getPixelForValue(marker.idx);
+      if (!Number.isFinite(x)) return;
+
+      ctx.strokeStyle = marker.color;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(x, chartArea.top);
+      ctx.lineTo(x, chartArea.bottom);
+      ctx.stroke();
+    });
+    ctx.restore();
+  }
+};
+Chart.register(levelLinePlugin);
+
+function makeOIChart(canvasId, chartData, levels) {
+  const markers = levelMarkers(chartData, levels);
+  new Chart(document.getElementById(canvasId), {
+    type: 'bar',
+    data: {
+      labels: chartData.strikes,
+      datasets: [
+        { label: 'Call OI', data: chartData.call_oi, backgroundColor: '#3fb95066', borderColor: '#3fb950', borderWidth: 1 },
+        { label: 'Put OI',  data: chartData.put_oi.map(v => -v), backgroundColor: '#f8514966', borderColor: '#f85149', borderWidth: 1 },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: true,
+      interaction: { mode: 'index' },
+      plugins: {
+        legend: { labels: { color: '#8b949e', font: { size: 11 } } },
+        tooltip: {
+          callbacks: {
+            label: ctx => `${ctx.dataset.label}: ${Math.abs(ctx.raw).toLocaleString()}`,
+          }
+        },
+        levelLines: { markers },
+      },
+      scales: {
+        x: { ticks: { color: '#8b949e', maxRotation: 45, font: { size: 10 } }, grid: { color: '#21262d' } },
+        y: { ticks: { color: '#8b949e', callback: v => fmtK(Math.abs(v)), font: { size: 10 } }, grid: { color: '#21262d' } },
+      }
+    }
+  });
+}
+
+function makeVolChart(canvasId, volChart) {
+  const labels   = volChart.strikes.map(s => fmt(s));
+  const callVols = volChart.call_vol;
+  const putVols  = volChart.put_vol;
+  new Chart(document.getElementById(canvasId), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Call Vol', data: callVols, backgroundColor: '#3fb95088' },
+        { label: 'Put Vol',  data: putVols,  backgroundColor: '#f8514988' },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: true,
+      plugins: {
+        legend: { labels: { color: '#8b949e', font: { size: 11 } } },
+        tooltip: {
+          callbacks: {
+            title: items => items[0]?.label || '',
+            label: ctx => `${ctx.dataset.label}: ${fmtK(ctx.raw)}`,
+          }
+        },
+      },
+      scales: {
+        x: { ticks: { color: '#8b949e', maxRotation: 45, font: { size: 10 } }, grid: { color: '#21262d' } },
+        y: { ticks: { color: '#8b949e', callback: v => fmtK(v), font: { size: 10 } }, grid: { color: '#21262d' } },
+      }
+    }
+  });
+}
+
+renderLevelLegend('legend-current', levelMarkers(DATA.current.oi_chart, DATA.current.levels));
+renderLevelLegend('legend-next', levelMarkers(DATA.next.oi_chart, DATA.next.levels));
+makeOIChart('chart-current', DATA.current.oi_chart, DATA.current.levels);
+makeVolChart('chart-current-vol', DATA.current.vol_chart);
+makeOIChart('chart-next', DATA.next.oi_chart, DATA.next.levels);
+makeVolChart('chart-next-vol', DATA.next.vol_chart);
+
+// ── option tables ─────────────────────────────────────────────────────────────
+const TABLE_HEAD = `<thead><tr>
+  <th>Code</th><th>Strike</th><th>Vol</th><th>OI</th><th>OI Chg</th>
+  <th>Last</th><th>Bid</th><th>Ask</th>
+  <th>IV%</th><th>Δ</th><th>Γ</th><th>Θ</th>
+</tr></thead>`;
+
+function renderTable(tableId, rows) {
+  if (!rows.length) {
+    document.getElementById(tableId).innerHTML = TABLE_HEAD + `<tbody><tr><td colspan="12" style="text-align:center;color:var(--muted);font-family:inherit;padding:18px">No contracts</td></tr></tbody>`;
+    return;
+  }
+
+  const activityTitle = (r) => [
+    r.activity_label || 'Normal',
+    ...((r.activity_reasons || []).map(reason => `- ${reason}`)),
+  ].join('\n');
+
+  const tbody = rows.map(r => `<tr>
+    <td class="${r.activity_hot ? 'activity-hot' : ''}" title="${esc(activityTitle(r))}">${esc(shortCode(r))}${r.activity_hot ? ' &#128293;' : ''}</td>
+    <td>${fmt(r.strike_price)}</td>
+    <td>${fmtK(r.volume)}</td>
+    <td>${fmtK(r.option_open_interest)}</td>
+    <td class="${r.prev_oi_change > 0 ? 'up' : r.prev_oi_change < 0 ? 'down' : ''}">${fmtSignedK(r.prev_oi_change)}</td>
+    <td>${fmt(r.last_price)}</td>
+    <td>${fmt(r.bid_price)}</td>
+    <td>${fmt(r.ask_price)}</td>
+    <td>${r.option_implied_volatility != null ? fmt(r.option_implied_volatility, 1) : '—'}</td>
+    <td>${fmt(r.option_delta, 3)}</td>
+    <td>${fmt(r.option_gamma, 4)}</td>
+    <td>${fmt(r.option_theta, 3)}</td>
+  </tr>`).join('');
+  document.getElementById(tableId).innerHTML = TABLE_HEAD + `<tbody>${tbody}</tbody>`;
+}
+
+renderTable('tbl-cur-calls', DATA.current.top5_calls);
+renderTable('tbl-cur-puts',  DATA.current.top5_puts);
+renderTable('tbl-nxt-calls', DATA.next.top5_calls);
+renderTable('tbl-nxt-puts',  DATA.next.top5_puts);
+</script>
+</body>
+</html>

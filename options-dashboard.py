@@ -104,6 +104,50 @@ def fetch_snapshots(ctx, codes, label):
     return pd.concat(snap_parts, ignore_index=True)
 
 
+def fetch_derivative_commentary(ctx, code, time_range=7, language_id=1):
+    if not hasattr(ctx, 'get_derivative_unusual'):
+        return {
+            'enabled': True,
+            'loaded': False,
+            'time_range': None,
+            'range_label': f"Last {time_range} days",
+            'content': None,
+            'message': 'get_derivative_unusual is unavailable in this futu-api version',
+        }
+
+    try:
+        ret, data = ctx.get_derivative_unusual(code, time_range=time_range, language_id=language_id)
+    except Exception as exc:
+        return {
+            'enabled': True,
+            'loaded': False,
+            'time_range': None,
+            'range_label': f"Last {time_range} days",
+            'content': None,
+            'message': f"Futu derivative commentary unavailable: {exc}",
+        }
+
+    if ret != RET_OK or not isinstance(data, dict) or data.get('err_code') != 0:
+        return {
+            'enabled': True,
+            'loaded': False,
+            'time_range': None,
+            'range_label': f"Last {time_range} days",
+            'content': None,
+            'message': str(data),
+        }
+
+    content = data.get('content')
+    return {
+        'enabled': True,
+        'loaded': bool(content),
+        'time_range': data.get('time_range'),
+        'range_label': f"Last {time_range} days",
+        'content': content,
+        'message': data.get('retMsg') or 'success',
+    }
+
+
 def get_spot_from_snapshot(snapshot, code):
     require_columns(snapshot, ['code', 'last_price', 'prev_close_price'], f"Spot snapshot for {code}")
     rows = snapshot[snapshot['code'] == code]
@@ -170,10 +214,8 @@ def merge_chain_snapshot(chain, snapshot, code, expiry_date):
     if missing_codes:
         sample = ', '.join(missing_codes[:5])
         suffix = '...' if len(missing_codes) > 5 else ''
-        raise RuntimeError(
-            f"Option snapshot for {code} expiry {expiry_date} missing "
-            f"{len(missing_codes)} contracts: {sample}{suffix}"
-        )
+        print(f"  Warning: snapshot missing {len(missing_codes)} contract(s) "
+              f"for {code} expiry {expiry_date}: {sample}{suffix} — filling with NaN")
 
     # Keep only the columns we need from snapshot
     want = ['code', 'last_price', 'bid_price', 'ask_price', 'volume',
@@ -235,32 +277,50 @@ def hkex_cache_path(report_date):
     return HKEX_CACHE_DIR / f"dqe{hkex_url_date(report_date)}.htm"
 
 
+def validate_hkex_report_html(html, report_date):
+    if not str(html).strip():
+        raise ValueError(f"HKEX report {report_date} is empty")
+
+
 def fetch_hkex_daily_report(report_date):
     cache_path = hkex_cache_path(report_date)
     url = HKEX_REPORT_URL.format(date=hkex_url_date(report_date))
     if cache_path.exists():
-        return cache_path.read_text(encoding='iso-8859-1', errors='replace'), url
+        html = cache_path.read_text(encoding='iso-8859-1', errors='replace')
+        validate_hkex_report_html(html, report_date)
+        return html, url
 
     req = Request(url, headers={'User-Agent': 'Mozilla/5.0'})
     with urlopen(req, timeout=10) as resp:
         html = resp.read().decode('iso-8859-1', errors='replace')
+    validate_hkex_report_html(html, report_date)
 
     HKEX_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    cache_path.write_text(html, encoding='iso-8859-1', errors='replace')
+    tmp_path = cache_path.with_suffix(cache_path.suffix + '.tmp')
+    tmp_path.write_text(html, encoding='iso-8859-1', errors='replace')
+    tmp_path.replace(cache_path)
     return html, url
 
 
-def find_latest_hkex_report(start_date=None, lookback_days=10):
+def find_latest_hkex_report(start_date=None, lookback_days=10, option_class=None):
     start = start_date or (datetime.now().date() - timedelta(days=1))
     failures = []
     for offset in range(lookback_days + 1):
         report_date = (start - timedelta(days=offset)).strftime('%Y%m%d')
         try:
             html, url = fetch_hkex_daily_report(report_date)
+            if option_class:
+                rows = parse_hkex_daily_report(html, option_class)
+                if rows.empty:
+                    failures.append(f"{report_date}: no {option_class} rows in HKEX report")
+                    continue
             return report_date, html, url
-        except (HTTPError, URLError, TimeoutError, OSError) as exc:
+        except (HTTPError, URLError, TimeoutError, OSError, ValueError) as exc:
             failures.append(f"{report_date}: {exc}")
-    raise RuntimeError(f"No HKEX daily report found in last {lookback_days + 1} calendar days")
+    raise RuntimeError(
+        f"No HKEX daily report found in last {lookback_days + 1} calendar days\n"
+        + "\n".join(f"  {f}" for f in failures)
+    )
 
 
 def parse_hkex_number(value):
@@ -275,8 +335,22 @@ def parse_hkex_int(value):
     return None if number is None else int(round(number))
 
 
+_HKEX_MONTH = {
+    'JAN': 1, 'FEB': 2, 'MAR': 3, 'APR': 4, 'MAY': 5,  'JUN': 6,
+    'JUL': 7, 'AUG': 8, 'SEP': 9, 'OCT': 10, 'NOV': 11, 'DEC': 12,
+}
+
 def hkex_expiry_to_iso(value):
-    return datetime.strptime(value, '%d%b%y').strftime('%Y-%m-%d')
+    """Convert HKEX expiry string (e.g. '08MAY26') to ISO date. Locale-independent."""
+    text = str(value).strip().upper()
+    if len(text) != 7:
+        raise ValueError(f"Unexpected HKEX expiry format: {value!r}")
+    day   = int(text[:2])
+    month = _HKEX_MONTH.get(text[2:5])
+    year  = 2000 + int(text[5:7])
+    if month is None:
+        raise ValueError(f"Unknown month abbreviation {text[2:5]!r} in HKEX date {value!r}")
+    return f"{year:04d}-{month:02d}-{day:02d}"
 
 
 def parse_hkex_daily_report(html, option_class):
@@ -416,10 +490,11 @@ def key_levels(df, spot):
 
 def apply_activity_signals(
     df,
-    min_live_volume=100,
-    prev_volume_multiplier=2.0,
+    min_live_volume_floor=100,
+    p75_volume_floor=100,
+    p90_volume_floor=200,
+    min_traded_contracts_for_percentiles=5,
     volume_oi_ratio_threshold=0.50,
-    min_oi_change_for_hot=20,
 ):
     df = df.copy()
     df['volume_oi_ratio'] = None
@@ -443,32 +518,25 @@ def apply_activity_signals(
         reasons = {idx: [] for idx in side.index}
 
         live_volume = pd.to_numeric(side['volume'], errors='coerce').fillna(0)
-        live_volume_signal = live_volume >= min_live_volume
+        live_volume_signal = live_volume >= min_live_volume_floor
         score += live_volume_signal.astype(int)
         for idx, value in live_volume[live_volume_signal].items():
-            reasons[idx].append(f"Live volume {int(value):,} >= {min_live_volume:,}")
+            reasons[idx].append(f"Live volume {int(value):,} >= {min_live_volume_floor:,}")
 
-        if 'prev_volume' in side.columns:
-            prev_volume = pd.to_numeric(side['prev_volume'], errors='coerce')
-            prev_volume_known = prev_volume.notna()
-            above_nonzero_prev = (
-                prev_volume_known
-                & (prev_volume > 0)
-                & (live_volume >= prev_volume_multiplier * prev_volume)
-                & (live_volume >= min_live_volume)
-            )
-            above_zero_prev = (
-                prev_volume_known
-                & (prev_volume == 0)
-                & (live_volume >= min_live_volume)
-            )
-            score += (above_nonzero_prev | above_zero_prev).astype(int)
-            for idx in side.index[above_nonzero_prev]:
-                reasons[idx].append(
-                    f"Volume {int(live_volume.loc[idx]):,} >= {prev_volume_multiplier:g}x previous day {int(prev_volume.loc[idx]):,}"
-                )
-            for idx in side.index[above_zero_prev]:
-                reasons[idx].append(f"Previous-day volume was 0; live volume {int(live_volume.loc[idx]):,} is active")
+        traded_volume = live_volume[live_volume > 0]
+        if len(traded_volume) >= min_traded_contracts_for_percentiles:
+            p75_threshold = max(p75_volume_floor, float(traded_volume.quantile(0.75)))
+            p90_threshold = max(p90_volume_floor, float(traded_volume.quantile(0.90)))
+
+            p75_signal = live_volume >= p75_threshold
+            score += p75_signal.astype(int)
+            for idx, value in live_volume[p75_signal].items():
+                reasons[idx].append(f"Live volume {int(value):,} >= side p75 threshold {p75_threshold:,.0f}")
+
+            p90_signal = live_volume >= p90_threshold
+            score += p90_signal.astype(int)
+            for idx, value in live_volume[p90_signal].items():
+                reasons[idx].append(f"Live volume {int(value):,} >= side p90 threshold {p90_threshold:,.0f}")
 
         ratio = pd.to_numeric(side['volume_oi_ratio'], errors='coerce')
         ratio_signal = (ratio >= volume_oi_ratio_threshold).fillna(False)
@@ -490,12 +558,7 @@ def apply_activity_signals(
     df.loc[df['activity_score'] >= 4, 'activity_label'] = 'Strong Positioning'
     df.loc[df['activity_score'] == 3, 'activity_label'] = 'High Activity'
     df.loc[df['activity_score'] == 2, 'activity_label'] = 'Active'
-    prev_oi_change = pd.to_numeric(df.get('prev_oi_change'), errors='coerce')
-    df['activity_hot'] = (df['activity_score'] >= 4) & (prev_oi_change >= min_oi_change_for_hot)
-    for idx, row in df[df['activity_hot']].iterrows():
-        reasons = list(row['activity_reasons'])
-        reasons.append(f"Fire marker: score {int(row['activity_score'])} >= 4 and OI change {int(row['prev_oi_change']):,} >= {min_oi_change_for_hot:,}")
-        df.at[idx, 'activity_reasons'] = reasons
+    df['activity_hot'] = df['activity_score'] >= 4
     return df
 
 
@@ -513,19 +576,116 @@ def top5_by_vol(df, opt_type):
             .drop(columns=['has_volume']))
 
 
+def contract_ref(row):
+    if row is None or row.empty:
+        return None
+    return {
+        'option_class': row.get('option_class'),
+        'option_type': row.get('option_type'),
+        'strike_price': float(row['strike_price']) if pd.notna(row.get('strike_price')) else None,
+        'prev_oi_change': int(row['prev_oi_change']) if pd.notna(row.get('prev_oi_change')) else None,
+        'volume': int(row['volume']) if pd.notna(row.get('volume')) else None,
+        'option_open_interest': int(row['option_open_interest']) if pd.notna(row.get('option_open_interest')) else None,
+    }
+
+
+def oi_change_bias(call_change, put_change):
+    threshold = max(50, 0.1 * max(abs(call_change), abs(put_change), 1))
+    if abs(call_change - put_change) < threshold:
+        return 'Balanced'
+    if call_change > 0 and put_change > 0:
+        return 'Calls building faster' if call_change > put_change else 'Puts building faster'
+    if call_change < 0 and put_change < 0:
+        return 'Calls unwinding faster' if abs(call_change) > abs(put_change) else 'Puts unwinding faster'
+    if call_change > 0 and put_change < 0:
+        return 'Calls building, puts unwinding'
+    if call_change < 0 and put_change > 0:
+        return 'Puts building, calls unwinding'
+    if call_change == 0 and put_change > 0:
+        return 'Puts building'
+    if call_change == 0 and put_change < 0:
+        return 'Puts unwinding'
+    if put_change == 0 and call_change > 0:
+        return 'Calls building'
+    if put_change == 0 and call_change < 0:
+        return 'Calls unwinding'
+    return 'Mixed'
+
+
+def oi_change_summary(df):
+    out = {
+        'call_oi_change': None,
+        'put_oi_change': None,
+        'bias': 'Unavailable',
+        'largest_call_increase': None,
+        'largest_put_increase': None,
+    }
+    if 'prev_oi_change' not in df.columns:
+        return out
+
+    work = df.copy()
+    work['prev_oi_change_num'] = pd.to_numeric(work['prev_oi_change'], errors='coerce')
+    known = work[work['prev_oi_change_num'].notna()].copy()
+    if known.empty:
+        return out
+
+    calls = known[known['option_type'] == 'CALL']
+    puts = known[known['option_type'] == 'PUT']
+    call_change = int(calls['prev_oi_change_num'].sum()) if not calls.empty else 0
+    put_change = int(puts['prev_oi_change_num'].sum()) if not puts.empty else 0
+
+    def largest_increase(frame):
+        positive = frame[frame['prev_oi_change_num'] > 0]
+        if positive.empty:
+            return None
+        return contract_ref(positive.sort_values('prev_oi_change_num', ascending=False).iloc[0])
+
+    out.update({
+        'call_oi_change': call_change,
+        'put_oi_change': put_change,
+        'bias': oi_change_bias(call_change, put_change),
+        'largest_call_increase': largest_increase(calls),
+        'largest_put_increase': largest_increase(puts),
+    })
+    return out
+
+
 def oi_chart_data(df):
     calls = df[df['option_type'] == 'CALL'].groupby('strike_price')['option_open_interest'].sum()
     puts  = df[df['option_type'] == 'PUT'].groupby('strike_price')['option_open_interest'].sum()
     all_strikes = sorted(set(calls.index) | set(puts.index))
+
+    # Trim far-edge zeros: find first and last strike with any OI,
+    # keep everything in between (interior zeros preserved as meaningful gaps).
+    active = [s for s in all_strikes if calls.get(s, 0) > 0 or puts.get(s, 0) > 0]
+    if not active:
+        return {'strikes': [], 'call_oi': [], 'put_oi': []}
+    trimmed = [s for s in all_strikes if active[0] <= s <= active[-1]]
+
     return {
-        'strikes':  [float(s) for s in all_strikes],
-        'call_oi':  [float(calls.get(s, 0)) for s in all_strikes],
-        'put_oi':   [float(puts.get(s, 0))  for s in all_strikes],
+        'strikes':  [float(s) for s in trimmed],
+        'call_oi':  [float(calls.get(s, 0)) for s in trimmed],
+        'put_oi':   [float(puts.get(s, 0))  for s in trimmed],
+    }
+
+
+def vol_chart_data(df, top5_calls_records, top5_puts_records):
+    """Volume chart data: union of top-5 strikes, both sides looked up from full chain."""
+    strikes = sorted(set(
+        [r['strike_price'] for r in top5_calls_records if r.get('strike_price') is not None] +
+        [r['strike_price'] for r in top5_puts_records  if r.get('strike_price') is not None]
+    ))
+    call_vol = df[df['option_type'] == 'CALL'].groupby('strike_price')['volume'].sum()
+    put_vol  = df[df['option_type'] == 'PUT'].groupby('strike_price')['volume'].sum()
+    return {
+        'strikes':  [float(s) for s in strikes],
+        'call_vol': [float(call_vol.get(s, 0)) for s in strikes],
+        'put_vol':  [float(put_vol.get(s, 0))  for s in strikes],
     }
 
 
 def to_records(df):
-    cols = ['code', 'option_class', 'strike_price', 'volume', 'option_open_interest',
+    cols = ['code', 'option_class', 'option_type', 'strike_price', 'volume', 'option_open_interest',
             'prev_volume', 'prev_oi', 'prev_oi_change',
             'volume_oi_ratio', 'activity_score', 'activity_label', 'activity_hot', 'activity_reasons',
             'last_price', 'bid_price', 'ask_price',
@@ -611,6 +771,12 @@ def generate_html(data: dict) -> str:
   .expiry-notice {{ display: none; color: var(--yellow); background: #d299221a; border: 1px solid #d2992266; border-radius: 8px; padding: 8px 10px; margin: -4px 0 14px; font-size: 12px; }}
   .expiry-notice.show {{ display: block; }}
   .activity-source {{ color: var(--muted); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin: -10px 0 18px; font-size: 12px; }}
+  .commentary-box {{ display: none; background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; margin-bottom: 24px; }}
+  .commentary-box.show {{ display: block; }}
+  .commentary-box h3 {{ font-size: 12px; color: var(--purple); margin-bottom: 6px; text-transform: uppercase; letter-spacing: .4px; }}
+  .commentary-box .meta {{ color: var(--muted); font-size: 11px; margin-bottom: 8px; }}
+  .commentary-box ul {{ list-style: disc; padding-left: 18px; }}
+  .commentary-box li {{ color: var(--text); font-size: 12px; line-height: 1.55; margin: 5px 0; }}
 
   /* Charts */
   .charts-row {{ display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 28px; }}
@@ -628,6 +794,11 @@ def generate_html(data: dict) -> str:
   .levels-grid {{ display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }}
   .level-item .lbl {{ color: var(--muted); font-size: 10px; text-transform: uppercase; margin-bottom: 2px; }}
   .level-item .val {{ font-size: 14px; font-weight: 600; }}
+  .summary-row {{ display: grid; grid-template-columns: 1fr; gap: 16px; margin-bottom: 24px; }}
+  .summary-grid {{ display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }}
+  .summary-item .lbl {{ color: var(--muted); font-size: 10px; text-transform: uppercase; margin-bottom: 2px; }}
+  .summary-item .val {{ font-size: 13px; font-weight: 600; }}
+  .summary-item .sub {{ color: var(--muted); font-size: 10px; margin-top: 2px; }}
 
   /* Tables */
   .tables-row {{ display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 28px; }}
@@ -652,10 +823,12 @@ def generate_html(data: dict) -> str:
 
   @media (max-width: 900px) {{
     .cards {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+    .summary-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
     .charts-row, .levels-row, .tables-row {{ grid-template-columns: 1fr; }}
   }}
   @media (max-width: 520px) {{
     .cards {{ grid-template-columns: 1fr; }}
+    .summary-grid {{ grid-template-columns: 1fr; }}
   }}
 </style>
 </head>
@@ -675,6 +848,11 @@ def generate_html(data: dict) -> str:
   <div class="section-title first">Key Statistics</div>
   <div class="cards" id="stat-cards"></div>
   <div class="activity-source" id="activity-source"></div>
+  <div class="commentary-box" id="futu-commentary-box">
+    <h3>Futu Derivative Abnormal Activity</h3>
+    <div class="meta" id="futu-commentary-meta"></div>
+    <ul id="futu-commentary-content"></ul>
+  </div>
 
   <!-- Current expiry -->
   <div class="section-title">
@@ -691,6 +869,12 @@ def generate_html(data: dict) -> str:
     <div class="levels-box">
       <h3>Put / Call Ratios</h3>
       <div id="current-pc"></div>
+    </div>
+  </div>
+  <div class="summary-row">
+    <div class="levels-box">
+      <h3>Previous-Day OI Change</h3>
+      <div class="summary-grid" id="current-oi-change-summary"></div>
     </div>
   </div>
   <div class="charts-row">
@@ -730,6 +914,12 @@ def generate_html(data: dict) -> str:
     <div class="levels-box">
       <h3>Put / Call Ratios</h3>
       <div id="next-pc"></div>
+    </div>
+  </div>
+  <div class="summary-row">
+    <div class="levels-box">
+      <h3>Previous-Day OI Change</h3>
+      <div class="summary-grid" id="next-oi-change-summary"></div>
     </div>
   </div>
   <div class="charts-row">
@@ -812,6 +1002,21 @@ function renderActivitySource() {{
 
 renderActivitySource();
 
+function renderFutuCommentary() {{
+  const commentary = DATA.futu_commentary || {{}};
+  if (!commentary.loaded || !commentary.content) return;
+
+  document.getElementById('futu-commentary-meta').textContent = commentary.range_label || '';
+  const lines = String(commentary.content)
+    .split(/\\n+/)
+    .map(line => line.trim())
+    .filter(Boolean);
+  document.getElementById('futu-commentary-content').innerHTML = lines.map(line => `<li>${{esc(line)}}</li>`).join('');
+  document.getElementById('futu-commentary-box').classList.add('show');
+}}
+
+renderFutuCommentary();
+
 // ── key levels block ──────────────────────────────────────────────────────────
 function renderLevels(containerId, levels) {{
   const items = [
@@ -854,6 +1059,34 @@ function renderPC(containerId, levels) {{
     </div>`;
 }}
 
+function contractLabel(c) {{
+  if (!c) return '—';
+  const type = c.option_type === 'CALL' ? 'C' : c.option_type === 'PUT' ? 'P' : '';
+  return `${{type}}${{fmt(c.strike_price)}}`;
+}}
+
+function contractSub(c) {{
+  if (!c) return '';
+  return `Vol ${{fmtK(c.volume)}} | OI ${{fmtK(c.option_open_interest)}}`;
+}}
+
+function renderOIChangeSummary(containerId, summary) {{
+  summary = summary || {{}};
+  const items = [
+    {{ lbl:'Call OI Chg', val: fmtSignedK(summary.call_oi_change), cls: summary.call_oi_change > 0 ? 'up' : summary.call_oi_change < 0 ? 'down' : '', sub:'previous day' }},
+    {{ lbl:'Put OI Chg', val: fmtSignedK(summary.put_oi_change), cls: summary.put_oi_change > 0 ? 'up' : summary.put_oi_change < 0 ? 'down' : '', sub:'previous day' }},
+    {{ lbl:'Bias', val: summary.bias || 'Unavailable', cls:'neutral', sub:'by OI change' }},
+    {{ lbl:'Largest Call Add', val: contractLabel(summary.largest_call_increase), cls:'up', sub: summary.largest_call_increase ? `${{fmtSignedK(summary.largest_call_increase.prev_oi_change)}} | ${{contractSub(summary.largest_call_increase)}}` : '' }},
+    {{ lbl:'Largest Put Add', val: contractLabel(summary.largest_put_increase), cls:'down', sub: summary.largest_put_increase ? `${{fmtSignedK(summary.largest_put_increase.prev_oi_change)}} | ${{contractSub(summary.largest_put_increase)}}` : '' }},
+  ];
+  document.getElementById(containerId).innerHTML = items.map(i => `
+    <div class="summary-item">
+      <div class="lbl">${{esc(i.lbl)}}</div>
+      <div class="val ${{i.cls}}">${{esc(i.val)}}</div>
+      <div class="sub">${{esc(i.sub)}}</div>
+    </div>`).join('');
+}}
+
 function renderExpiryMeta(prefix, section) {{
   document.getElementById(`${{prefix}}-expiry-label`).textContent = section.expiry;
 
@@ -868,8 +1101,10 @@ function renderExpiryMeta(prefix, section) {{
 
 renderLevels('current-levels', DATA.current.levels);
 renderPC('current-pc', DATA.current.levels);
+renderOIChangeSummary('current-oi-change-summary', DATA.current.oi_change_summary);
 renderLevels('next-levels', DATA.next.levels);
 renderPC('next-pc', DATA.next.levels);
+renderOIChangeSummary('next-oi-change-summary', DATA.next.oi_change_summary);
 
 renderExpiryMeta('current', DATA.current);
 renderExpiryMeta('next', DATA.next);
@@ -966,19 +1201,10 @@ function makeOIChart(canvasId, chartData, levels) {{
   }});
 }}
 
-function makeVolChart(canvasId, top5calls, top5puts) {{
-  const labels   = [];
-  const callVols = [];
-  const putVols  = [];
-  const maxLen   = Math.max(top5calls.length, top5puts.length);
-  for (let i = 0; i < maxLen; i++) {{
-    const c = top5calls[i], p = top5puts[i];
-    const callStrike = c ? `C${{fmt(c.strike_price)}}` : '—';
-    const putStrike = p ? `P${{fmt(p.strike_price)}}` : '—';
-    labels.push(`${{callStrike}} / ${{putStrike}}`);
-    callVols.push(c ? c.volume : 0);
-    putVols.push(p  ? p.volume  : 0);
-  }}
+function makeVolChart(canvasId, volChart) {{
+  const labels   = volChart.strikes.map(s => fmt(s));
+  const callVols = volChart.call_vol;
+  const putVols  = volChart.put_vol;
   new Chart(document.getElementById(canvasId), {{
     type: 'bar',
     data: {{
@@ -1010,9 +1236,9 @@ function makeVolChart(canvasId, top5calls, top5puts) {{
 renderLevelLegend('legend-current', levelMarkers(DATA.current.oi_chart, DATA.current.levels));
 renderLevelLegend('legend-next', levelMarkers(DATA.next.oi_chart, DATA.next.levels));
 makeOIChart('chart-current', DATA.current.oi_chart, DATA.current.levels);
-makeVolChart('chart-current-vol', DATA.current.top5_calls, DATA.current.top5_puts);
+makeVolChart('chart-current-vol', DATA.current.vol_chart);
 makeOIChart('chart-next', DATA.next.oi_chart, DATA.next.levels);
-makeVolChart('chart-next-vol', DATA.next.top5_calls, DATA.next.top5_puts);
+makeVolChart('chart-next-vol', DATA.next.vol_chart);
 
 // ── option tables ─────────────────────────────────────────────────────────────
 const TABLE_HEAD = `<thead><tr>
@@ -1070,6 +1296,9 @@ def main():
     parser.add_argument('--output', default=None)
     parser.add_argument('--hkex-date', default=None, help='HKEX daily report date, YYYYMMDD or YYMMDD; defaults to latest available')
     parser.add_argument('--no-hkex', action='store_true', help='Disable HKEX previous-day activity enrichment')
+    parser.add_argument('--no-futu-commentary', action='store_true', help='Disable Futu derivative abnormal activity commentary')
+    parser.add_argument('--commentary-language', type=int, default=2, help='Futu commentary language: 0 simplified Chinese, 1 traditional Chinese, 2 English')
+    parser.add_argument('--commentary-time-range', type=int, default=7, help='Futu commentary time range in natural days')
     args = parser.parse_args()
     output_path = args.output or default_output_path(args.code)
 
@@ -1096,6 +1325,26 @@ def main():
 
         spot, change_pct = get_spot_from_snapshot(snapshot, args.code)
         print(f"  Spot: {spot:.2f}  ({change_pct:+.2f}%)")
+
+        if args.no_futu_commentary:
+            futu_commentary = {
+                'enabled': False,
+                'loaded': False,
+                'time_range': None,
+                'range_label': f"Last {args.commentary_time_range} days",
+                'content': None,
+                'message': 'Futu derivative commentary disabled',
+            }
+        else:
+            print("  Fetching Futu derivative abnormal activity ...")
+            futu_commentary = fetch_derivative_commentary(
+                ctx,
+                args.code,
+                time_range=args.commentary_time_range,
+                language_id=args.commentary_language,
+            )
+            if not futu_commentary['loaded']:
+                print(f"  Futu commentary unavailable: {futu_commentary['message']}")
 
         df_cur = merge_chain_snapshot(chain_cur, snapshot, args.code, current_exp_date)
         df_cur, suspended_cur = filter_suspended(df_cur, current_exp_date)
@@ -1135,7 +1384,7 @@ def main():
                     report_date = normalise_hkex_date(args.hkex_date)
                     hkex_html, hkex_url = fetch_hkex_daily_report(report_date)
                 else:
-                    report_date, hkex_html, hkex_url = find_latest_hkex_report()
+                    report_date, hkex_html, hkex_url = find_latest_hkex_report(option_class=option_class)
 
                 hkex_rows = parse_hkex_daily_report(hkex_html, option_class)
                 df_cur = merge_hkex_activity(df_cur, hkex_rows)
@@ -1174,23 +1423,28 @@ def main():
             'change_pct':  round(change_pct, 2),
             'last_updated': datetime.now().strftime('%Y-%m-%d %H:%M'),
             'hkex':        hkex_meta,
+            'futu_commentary': futu_commentary,
             'current': {
                 'expiry':     current_exp_date,
                 'expiry_days': current_exp['days'],
                 'is_expiry_today': current_exp['is_expiry_today'],
                 'levels':     lvl_cur,
-                'top5_calls': to_records(top5_by_vol(df_cur, 'CALL')),
-                'top5_puts':  to_records(top5_by_vol(df_cur, 'PUT')),
+                'top5_calls': (cur_calls := to_records(top5_by_vol(df_cur, 'CALL'))),
+                'top5_puts':  (cur_puts  := to_records(top5_by_vol(df_cur, 'PUT'))),
+                'oi_change_summary': oi_change_summary(df_cur),
                 'oi_chart':   oi_chart_data(df_cur),
+                'vol_chart':  vol_chart_data(df_cur, cur_calls, cur_puts),
             },
             'next': {
                 'expiry':     next_exp_date,
                 'expiry_days': next_exp['days'],
                 'is_expiry_today': next_exp['is_expiry_today'],
                 'levels':     lvl_nxt,
-                'top5_calls': to_records(top5_by_vol(df_nxt, 'CALL')),
-                'top5_puts':  to_records(top5_by_vol(df_nxt, 'PUT')),
+                'top5_calls': (nxt_calls := to_records(top5_by_vol(df_nxt, 'CALL'))),
+                'top5_puts':  (nxt_puts  := to_records(top5_by_vol(df_nxt, 'PUT'))),
+                'oi_change_summary': oi_change_summary(df_nxt),
                 'oi_chart':   oi_chart_data(df_nxt),
+                'vol_chart':  vol_chart_data(df_nxt, nxt_calls, nxt_puts),
             },
         }
 
